@@ -1,0 +1,309 @@
+<title>Datos del reto RawTree</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: una columna de lectura. Orden: términos → organización → diagrama ER → flujo de una petición → cada columna por familia → uniones → trampas. */
+:root {
+  --bg: #f5f7f8; --surface: #ffffff; --ink: #17212b; --muted: #5a6675; --line: #dce2e8;
+  --key: #0f6e8c;
+  --ref: #1f5fa8; --ref-soft: #e4eef9;
+  --hist: #3d6b3f; --hist-soft: #e7f1e5;
+  --live: #a65400; --live-soft: #fbeedd;
+  --team: #6a46c8; --team-soft: #eee9fb;
+  --font-display: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #10151b; --surface: #17202a; --ink: #e5eaf0; --muted: #9aa6b4; --line: #2a3542; --key: #5fc0dd;
+  --ref: #7fb2ec; --ref-soft: #162a40; --hist: #8fc68f; --hist-soft: #1b2e1d;
+  --live: #eaa152; --live-soft: #35260f; --team: #a990f0; --team-soft: #261f3d; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #10151b; --surface: #17202a; --ink: #e5eaf0; --muted: #9aa6b4; --line: #2a3542; --key: #5fc0dd;
+  --ref: #7fb2ec; --ref-soft: #162a40; --hist: #8fc68f; --hist-soft: #1b2e1d;
+  --live: #eaa152; --live-soft: #35260f; --team: #a990f0; --team-soft: #261f3d; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15.5px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; }
+main { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 52px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(1.9rem, 4vw, 2.5rem); font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 1.5rem; font-weight: 600; }
+h3 { font-size: 1.05rem; font-weight: 600; }
+p { margin: 0; max-width: 72ch; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+section, .sub { display: flex; flex-direction: column; gap: 18px; }
+.sub { gap: 14px; }
+.lede { font-size: 1.07rem; color: var(--muted); }
+.small { font-size: 0.85rem; color: var(--muted); }
+header { display: flex; flex-direction: column; gap: 14px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 0.85rem; color: var(--muted); }
+hr.part { border: none; border-top: 1px solid var(--line); margin: 0; }
+
+.terms { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; margin: 0; }
+.terms div { padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 0.9rem; min-width: 0; }
+.terms dt { font-family: var(--font-mono); font-size: 0.82rem; font-weight: 500; }
+.terms dd { margin: 2px 0 0; color: var(--muted); }
+
+.principles { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.principles li { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 0.9rem; min-width: 0; }
+.principles b { display: block; font-family: var(--font-display); font-weight: 600; font-size: 0.98rem; margin-bottom: 2px; }
+
+.families { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.fam { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.fam h3 { display: flex; align-items: center; gap: 8px; }
+.fam ul { margin: 0; padding-left: 0; list-style: none; font-family: var(--font-mono); font-size: 0.8rem; }
+.fam p { font-size: 0.88rem; color: var(--muted); }
+.dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+.d-ref { background: var(--ref); } .d-hist { background: var(--hist); } .d-live { background: var(--live); } .d-team { background: var(--team); }
+
+figure { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.diagram { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); padding: 12px; }
+.diagram svg { display: block; width: 100%; min-width: 820px; height: auto; color: var(--ink); }
+.diagram text { font-family: var(--font-mono); font-size: 11.5px; fill: currentColor; }
+.diagram .t-head { font-weight: 500; font-size: 12.5px; }
+.diagram .t-db { fill: var(--muted); font-weight: 400; }
+.diagram .t-muted { fill: var(--muted); font-size: 10px; }
+.diagram .t-key { fill: var(--key); }
+.diagram .t-usr { fill: var(--muted); font-style: italic; }
+.diagram .t-edge { fill: var(--muted); font-size: 10px; }
+.diagram .box { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
+.diagram .h-ref { fill: var(--ref-soft); } .diagram .h-hist { fill: var(--hist-soft); }
+.diagram .h-live { fill: var(--live-soft); } .diagram .h-team { fill: var(--team-soft); }
+.diagram .edge { stroke: var(--muted); stroke-width: 1.2; fill: none; }
+.diagram .edge.logic { stroke-dasharray: 5 4; }
+.diagram .arrowhead { fill: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.82rem; color: var(--muted); align-items: center; }
+.legend span { display: inline-flex; gap: 6px; align-items: center; }
+.legend .k { color: var(--key); font-family: var(--font-mono); }
+figcaption { font-size: 0.85rem; color: var(--muted); max-width: 84ch; }
+
+.pipe { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); }
+.node { display: inline-flex; flex-direction: column; padding: 8px 12px; border-radius: 8px; font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.3; border: 1px solid var(--line); background: var(--bg); }
+.node b { font-weight: 500; }
+.node span { color: var(--muted); font-size: 0.72rem; }
+.node.n-live { border-color: var(--live); background: var(--live-soft); }
+.node.n-team { border-color: var(--team); background: var(--team-soft); }
+.node.n-ref { border-color: var(--ref); background: var(--ref-soft); }
+.pipe .to { color: var(--muted); font-family: var(--font-mono); }
+.pipe .note { flex-basis: 100%; font-size: 0.82rem; color: var(--muted); }
+
+.tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; align-items: start; }
+.tcard { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.tcard .thead { padding: 12px 16px 10px; display: flex; flex-direction: column; gap: 3px; }
+.g-ref .thead { background: var(--ref-soft); } .g-hist .thead { background: var(--hist-soft); }
+.g-live .thead { background: var(--live-soft); } .g-team .thead { background: var(--team-soft); }
+.tcard .trow { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.tcard .thead h3 { font-family: var(--font-mono); font-weight: 500; font-size: 0.95rem; }
+.tcard .thead > span { font-size: 0.84rem; color: var(--muted); }
+.tcard table { font-size: 0.82rem; width: 100%; table-layout: fixed; border-collapse: collapse; }
+.tcard td { padding: 6px 12px 6px 16px; vertical-align: top; overflow-wrap: anywhere; border-top: 1px solid var(--line); }
+.tcard td:first-child { font-family: var(--font-mono); width: 40%; }
+.tcard td.k { color: var(--key); }
+.tcard td.u { font-style: italic; }
+.tag { display: block; font-family: var(--font-mono); font-size: 0.68rem; color: var(--muted); font-style: normal; }
+.pill { display: inline-block; font-family: var(--font-mono); font-size: 0.72rem; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+.p-ref { color: var(--ref); border-color: var(--ref); } .p-hist { color: var(--hist); border-color: var(--hist); }
+.p-live { color: var(--live); border-color: var(--live); } .p-team { color: var(--team); border-color: var(--team); }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table.plain { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+.plain th, .plain td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.plain th { font-weight: 500; color: var(--muted); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.plain tr:last-child td { border-bottom: none; }
+td.when { font-family: var(--font-mono); font-size: 0.82rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.stat .n { font-family: var(--font-display); font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat .l { font-size: 0.8rem; color: var(--muted); }
+
+.recipes { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 14px; }
+@media (max-width: 520px) { .recipes { grid-template-columns: 1fr; } }
+.recipe { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.recipe p { font-size: 0.9rem; }
+.formula { font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.5; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; white-space: pre; margin: 0; }
+.callout { border: 1px solid var(--live); background: var(--live-soft); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.callout h3 { color: var(--live); }
+.checklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.checklist li { display: grid; grid-template-columns: 170px 1fr; gap: 12px; align-items: baseline; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font-size: 0.9rem; }
+.checklist li b { font-family: var(--font-mono); font-weight: 500; font-size: 0.82rem; }
+@media (max-width: 560px) { .checklist li { grid-template-columns: 1fr; gap: 4px; } }
+footer { font-size: 0.82rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-direction: column; gap: 4px; }
+</style>
+
+<main>
+  <header>
+    <div class="eyebrow">Datathon FME 2026 · Reto RawTree · team_03</div>
+    <h1>Los datos del reto: tablas, campos y cómo se unen</h1>
+    <p class="lede">Todo vive en RawTree, una base de datos de JSON que se consulta con SQL. Hay <b>9 tablas</b> en dos bases de datos: <span class="mono">shop</span>, compartida y de solo lectura, y <span class="mono">team_03</span>, la nuestra. Esta página muestra qué guarda cada una, todos sus campos y qué clave une cada tabla con las demás.</p>
+    <div class="stats">
+      <div class="stat"><div class="n">5.000</div><div class="l">productos · 10 categorías</div></div>
+      <div class="stat"><div class="n">2 M</div><div class="l">impresiones del carrusel antiguo</div></div>
+      <div class="stat"><div class="n">12 M</div><div class="l">eventos orgánicos (60 días)</div></div>
+      <div class="stat"><div class="n">3 / s</div><div class="l">peticiones a responder</div></div>
+      <div class="stat"><div class="n">~66 / s</div><div class="l">eventos en vivo</div></div>
+    </div>
+    <div class="meta">
+      <span>Datos consultados el sábado 14/11/2026 a las 12:15 CET</span>
+      <span>Marcas de tiempo de los datos en UTC (CET = UTC+1)</span>
+      <span>Análisis detallado: <span class="mono">docs/exploracion_inicial.pdf</span></span>
+    </div>
+  </header>
+
+  <section aria-labelledby="terms">
+    <div class="eyebrow">Antes de empezar</div>
+    <h2 id="terms">Términos que usa esta página</h2>
+    <dl class="terms">
+      <div><dt>Petición (request)</dt><dd>Un comprador que llega al carrusel. Hay que contestarle con 10 productos en menos de 3 s desde su <span class="mono">ts</span>.</dd></div>
+      <div><dt>Carrusel · posición (slot)</dt><dd>La fila de 10 productos recomendados. La posición 1 es la que más se mira y se clica.</dd></div>
+      <div><dt>Impresión</dt><dd>Una vez que el carrusel se mostró a alguien. Es una fila de <span class="mono">history_sessions</span>.</dd></div>
+      <div><dt>Evento orgánico</dt><dd>Lo que el usuario hace en la tienda fuera del carrusel: ver, añadir al carrito o comprar.</dd></div>
+      <div><dt>recent_views</dt><dd>Los productos que el comprador ha visto en esta sesión antes de llegar, del más antiguo al más reciente. Vacío en la página home.</dd></div>
+      <div><dt>propensity</dt><dd>La probabilidad de que el sistema antiguo pusiera ese producto en esa posición. Sirve para corregir su sesgo hacia lo popular (IPS).</dd></div>
+      <div><dt>Fallback</dt><dd>Lo que ve el comprador si nuestra respuesta falta, llega tarde o es inválida: los best sellers de siempre que estén en stock.</dd></div>
+      <div><dt>Cold start</dt><dd>Una petición fría: <span class="mono">is_new_user</span> = true, o <span class="mono">recent_views</span> con algún producto nuevo del evento.</dd></div>
+      <div><dt>Dynamic</dt><dd>El tipo de todas las columnas en RawTree: cada valor guarda su propio tipo. Para JOIN y algunos agregados hay que convertirlo: <span class="mono">product_id::String</span>.</dd></div>
+      <div><dt>Catálogo vigente</dt><dd>El catálogo tal y como está ahora: <span class="mono">catalog</span> con el último cambio de <span class="mono">catalog_updates</span> de cada producto.</dd></div>
+      <div><dt>Sesión</dt><dd>Una visita a la tienda (<span class="mono">session_id</span>). Solo aparece en las tablas de eventos; en las peticiones la sesión es implícita, a través de <span class="mono">recent_views</span>.</dd></div>
+      <div><dt>append-only</dt><dd>Solo se añaden filas, nunca se modifican. El estado actual sale de quedarse con la última fila de cada clave.</dd></div>
+    </dl>
+  </section>
+
+  <hr class="part">
+
+  <section aria-labelledby="org">
+    <div class="eyebrow">Parte 1 · Organización</div>
+    <h2 id="org">Cuatro familias de tablas</h2>
+    <div class="families">
+      <div class="fam"><h3><span class="dot d-ref"></span>Referencia</h3><ul><li>shop.catalog</li><li>shop.catalog_updates</li></ul><p>Qué productos existen, su precio y si hay stock. El catálogo vigente es <span class="mono">catalog</span> con el último cambio de cada producto aplicado encima.</p></div>
+      <div class="fam"><h3><span class="dot d-hist"></span>Histórico</h3><ul><li>shop.history_sessions</li><li>shop.history_events</li></ul><p>60 días anteriores al evento (15/09 → 14/11). Sirven para entrenar y evaluar offline.</p></div>
+      <div class="fam"><h3><span class="dot d-live"></span>En vivo</h3><ul><li>shop.requests</li><li>shop.events</li></ul><p>Lo que pasa ahora, desde el sábado a las 10:00 CET. Tienen la misma forma que las dos tablas del histórico.</p></div>
+      <div class="fam"><h3><span class="dot d-team"></span>Nuestra · team_03</h3><ul><li>team_03.submissions</li><li>team_03.feedback</li><li>team_03.scratch</li></ul><p>Lo que respondemos, lo que pasó con cada respuesta y un almacén libre.</p></div>
+    </div>
+    <ul class="principles">
+      <li><b>El histórico y el vivo son gemelos</b><span class="mono">history_sessions</span> ↔ <span class="mono">requests</span> + <span class="mono">feedback</span>, y <span class="mono">history_events</span> ↔ <span class="mono">events</span>. Lo que funcione offline se aplica igual en vivo.</li>
+      <li><b>product_id lo une todo</b>Todas las tablas apuntan al catálogo, a veces dentro de un array (<span class="mono">shown</span>, <span class="mono">items</span>, <span class="mono">recent_views</span>).</li>
+      <li><b>No hay claves declaradas</b>RawTree no tiene claves foráneas. Las flechas del diagrama son uniones por valor que hemos comprobado con los datos.</li>
+      <li><b>Las tablas en vivo solo crecen</b>Nunca se borra ni se modifica nada. Para el stock o el precio de ahora, quédate con la última fila de cada <span class="mono">product_id</span>.</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="er">
+    <div class="eyebrow">Parte 2 · El modelo</div>
+    <h2 id="er">Tablas y cómo se relacionan</h2>
+    <figure>
+      <div class="diagram"><svg viewBox="0 0 1000 839" role="img" aria-label="Diagrama de las nueve tablas. catalog es el centro: catalog_updates, history_sessions, history_events, requests y events lo referencian por product_id. requests, submissions y feedback se unen por request_id. user_id une requests con events y history_sessions con history_events."><defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker></defs><rect class="box" x="16" y="40" width="230" height="244" rx="8"/><path class="head h-hist" d="M17 70 V48 a7 7 0 0 1 7 -7 H238 a7 7 0 0 1 7 7 V70 Z"/><text class="t-head" x="26" y="60"><tspan class="t-db">shop.</tspan>history_sessions</text><text class="t-muted" x="236" y="60" text-anchor="end">2,0 M</text><text class="t-key" x="26" y="86">request_id</text><text class="t-muted" x="236" y="86" text-anchor="end">String  PK</text><text x="26" y="103">ts</text><text class="t-muted" x="236" y="103" text-anchor="end">DateTime64</text><text class="t-usr" x="26" y="120">user_id</text><text class="t-muted" x="236" y="120" text-anchor="end">String</text><text x="26" y="137">context.device</text><text class="t-muted" x="236" y="137" text-anchor="end">String</text><text x="26" y="154">context.region</text><text class="t-muted" x="236" y="154" text-anchor="end">String</text><text x="26" y="171">context.page</text><text class="t-muted" x="236" y="171" text-anchor="end">String</text><text class="t-key" x="26" y="188">recent_views</text><text class="t-muted" x="236" y="188" text-anchor="end">Array(JSON)  [ ]→</text><text class="t-key" x="26" y="205">shown</text><text class="t-muted" x="236" y="205" text-anchor="end">Array(String)  [ ]→</text><text x="26" y="222">propensity</text><text class="t-muted" x="236" y="222" text-anchor="end">[Float64]</text><text class="t-key" x="26" y="239">clicked</text><text class="t-muted" x="236" y="239" text-anchor="end">String | NULL  →</text><text class="t-key" x="26" y="256">purchased</text><text class="t-muted" x="236" y="256" text-anchor="end">String | NULL  →</text><text x="26" y="273">revenue_eur</text><text class="t-muted" x="236" y="273" text-anchor="end">Float64</text><rect class="box" x="16" y="340" width="230" height="176" rx="8"/><path class="head h-live" d="M17 370 V348 a7 7 0 0 1 7 -7 H238 a7 7 0 0 1 7 7 V370 Z"/><text class="t-head" x="26" y="360"><tspan class="t-db">shop.</tspan>requests</text><text class="t-muted" x="236" y="360" text-anchor="end">23,7 k</text><text class="t-key" x="26" y="386">request_id</text><text class="t-muted" x="236" y="386" text-anchor="end">String  PK</text><text x="26" y="403">ts</text><text class="t-muted" x="236" y="403" text-anchor="end">DateTime64</text><text class="t-usr" x="26" y="420">user_id</text><text class="t-muted" x="236" y="420" text-anchor="end">String</text><text x="26" y="437">is_new_user</text><text class="t-muted" x="236" y="437" text-anchor="end">Bool</text><text x="26" y="454">context.device</text><text class="t-muted" x="236" y="454" text-anchor="end">String</text><text x="26" y="471">context.region</text><text class="t-muted" x="236" y="471" text-anchor="end">String</text><text x="26" y="488">context.page</text><text class="t-muted" x="236" y="488" text-anchor="end">String</text><text class="t-key" x="26" y="505">recent_views</text><text class="t-muted" x="236" y="505" text-anchor="end">Array(JSON)  [ ]→</text><rect class="box" x="16" y="630" width="230" height="91" rx="8"/><path class="head h-team" d="M17 660 V638 a7 7 0 0 1 7 -7 H238 a7 7 0 0 1 7 7 V660 Z"/><text class="t-head" x="26" y="650"><tspan class="t-db">team_03.</tspan>submissions</text><text class="t-muted" x="236" y="650" text-anchor="end">3.801</text><text class="t-key" x="26" y="676">request_id</text><text class="t-muted" x="236" y="676" text-anchor="end">String  →</text><text class="t-key" x="26" y="693">items</text><text class="t-muted" x="236" y="693" text-anchor="end">Array(String)  [ ]→</text><text x="26" y="710">model_version</text><text class="t-muted" x="236" y="710" text-anchor="end">String</text><rect class="box" x="385" y="40" width="230" height="176" rx="8"/><path class="head h-ref" d="M386 70 V48 a7 7 0 0 1 7 -7 H607 a7 7 0 0 1 7 7 V70 Z"/><text class="t-head" x="395" y="60"><tspan class="t-db">shop.</tspan>catalog</text><text class="t-muted" x="605" y="60" text-anchor="end">5.000</text><text class="t-key" x="395" y="86">product_id</text><text class="t-muted" x="605" y="86" text-anchor="end">String  PK</text><text x="395" y="103">category</text><text class="t-muted" x="605" y="103" text-anchor="end">String</text><text x="395" y="120">subcategory</text><text class="t-muted" x="605" y="120" text-anchor="end">String</text><text x="395" y="137">brand</text><text class="t-muted" x="605" y="137" text-anchor="end">String</text><text x="395" y="154">price_eur</text><text class="t-muted" x="605" y="154" text-anchor="end">Float64</text><text x="395" y="171">description</text><text class="t-muted" x="605" y="171" text-anchor="end">String</text><text x="395" y="188">created_at</text><text class="t-muted" x="605" y="188" text-anchor="end">DateTime64</text><text x="395" y="205">is_active</text><text class="t-muted" x="605" y="205" text-anchor="end">Bool</text><rect class="box" x="385" y="276" width="230" height="210" rx="8"/><path class="head h-ref" d="M386 306 V284 a7 7 0 0 1 7 -7 H607 a7 7 0 0 1 7 7 V306 Z"/><text class="t-head" x="395" y="296"><tspan class="t-db">shop.</tspan>catalog_updates</text><text class="t-muted" x="605" y="296" text-anchor="end">846</text><text class="t-key" x="395" y="322">product_id</text><text class="t-muted" x="605" y="322" text-anchor="end">String  →</text><text x="395" y="339">change</text><text class="t-muted" x="605" y="339" text-anchor="end">String</text><text x="395" y="356">ts</text><text class="t-muted" x="605" y="356" text-anchor="end">DateTime64</text><text x="395" y="373">is_active</text><text class="t-muted" x="605" y="373" text-anchor="end">Bool</text><text x="395" y="390">price_eur</text><text class="t-muted" x="605" y="390" text-anchor="end">Float64</text><text x="395" y="407">category</text><text class="t-muted" x="605" y="407" text-anchor="end">String</text><text x="395" y="424">subcategory</text><text class="t-muted" x="605" y="424" text-anchor="end">String</text><text x="395" y="441">brand</text><text class="t-muted" x="605" y="441" text-anchor="end">String</text><text x="395" y="458">description</text><text class="t-muted" x="605" y="458" text-anchor="end">String</text><text x="395" y="475">created_at</text><text class="t-muted" x="605" y="475" text-anchor="end">DateTime64</text><rect class="box" x="385" y="630" width="230" height="193" rx="8"/><path class="head h-team" d="M386 660 V638 a7 7 0 0 1 7 -7 H607 a7 7 0 0 1 7 7 V660 Z"/><text class="t-head" x="395" y="650"><tspan class="t-db">team_03.</tspan>feedback</text><text class="t-muted" x="605" y="650" text-anchor="end">10,3 k</text><text class="t-key" x="395" y="676">request_id</text><text class="t-muted" x="605" y="676" text-anchor="end">String  →</text><text x="395" y="693">ts</text><text class="t-muted" x="605" y="693" text-anchor="end">DateTime64</text><text x="395" y="710">served_by</text><text class="t-muted" x="605" y="710" text-anchor="end">String</text><text x="395" y="727">fallback_reason</text><text class="t-muted" x="605" y="727" text-anchor="end">String</text><text x="395" y="744">latency_ms</text><text class="t-muted" x="605" y="744" text-anchor="end">Int64 | NULL</text><text class="t-key" x="395" y="761">shown</text><text class="t-muted" x="605" y="761" text-anchor="end">Array(String)  [ ]→</text><text class="t-key" x="395" y="778">clicked</text><text class="t-muted" x="605" y="778" text-anchor="end">String  →</text><text class="t-key" x="395" y="795">purchased</text><text class="t-muted" x="605" y="795" text-anchor="end">String  →</text><text x="395" y="812">revenue_eur</text><text class="t-muted" x="605" y="812" text-anchor="end">Float64</text><rect class="box" x="754" y="40" width="230" height="176" rx="8"/><path class="head h-hist" d="M755 70 V48 a7 7 0 0 1 7 -7 H976 a7 7 0 0 1 7 7 V70 Z"/><text class="t-head" x="764" y="60"><tspan class="t-db">shop.</tspan>history_events</text><text class="t-muted" x="974" y="60" text-anchor="end">12,0 M</text><text x="764" y="86">ts</text><text class="t-muted" x="974" y="86" text-anchor="end">DateTime64</text><text x="764" y="103">event_type</text><text class="t-muted" x="974" y="103" text-anchor="end">String</text><text class="t-usr" x="764" y="120">user_id</text><text class="t-muted" x="974" y="120" text-anchor="end">String</text><text class="t-usr" x="764" y="137">session_id</text><text class="t-muted" x="974" y="137" text-anchor="end">String</text><text class="t-key" x="764" y="154">product_id</text><text class="t-muted" x="974" y="154" text-anchor="end">String  →</text><text x="764" y="171">price_eur</text><text class="t-muted" x="974" y="171" text-anchor="end">Float64</text><text x="764" y="188">device</text><text class="t-muted" x="974" y="188" text-anchor="end">String</text><text x="764" y="205">region</text><text class="t-muted" x="974" y="205" text-anchor="end">String</text><rect class="box" x="754" y="276" width="230" height="176" rx="8"/><path class="head h-live" d="M755 306 V284 a7 7 0 0 1 7 -7 H976 a7 7 0 0 1 7 7 V306 Z"/><text class="t-head" x="764" y="296"><tspan class="t-db">shop.</tspan>events</text><text class="t-muted" x="974" y="296" text-anchor="end">526,0 k</text><text x="764" y="322">ts</text><text class="t-muted" x="974" y="322" text-anchor="end">DateTime64</text><text x="764" y="339">event_type</text><text class="t-muted" x="974" y="339" text-anchor="end">String</text><text class="t-usr" x="764" y="356">user_id</text><text class="t-muted" x="974" y="356" text-anchor="end">String</text><text class="t-usr" x="764" y="373">session_id</text><text class="t-muted" x="974" y="373" text-anchor="end">String</text><text class="t-key" x="764" y="390">product_id</text><text class="t-muted" x="974" y="390" text-anchor="end">String  →</text><text x="764" y="407">price_eur</text><text class="t-muted" x="974" y="407" text-anchor="end">Float64</text><text x="764" y="424">device</text><text class="t-muted" x="974" y="424" text-anchor="end">String</text><text x="764" y="441">region</text><text class="t-muted" x="974" y="441" text-anchor="end">String</text><rect class="box" x="754" y="630" width="230" height="57" rx="8"/><path class="head h-team" d="M755 660 V638 a7 7 0 0 1 7 -7 H976 a7 7 0 0 1 7 7 V660 Z"/><text class="t-head" x="764" y="650"><tspan class="t-db">team_03.</tspan>scratch</text><text class="t-muted" x="974" y="650" text-anchor="end">0</text><text x="764" y="676">{ JSON libre }</text><text class="t-muted" x="974" y="676" text-anchor="end">—</text><path class="edge" d="M500 276 V220" marker-end="url(#ah)"/><text class="t-edge" x="508" y="250" text-anchor="start">product_id</text><path class="edge" d="M246 82 H381" marker-end="url(#ah)"/><text class="t-edge" x="315" y="98" text-anchor="middle">shown[ ] · clicked</text><text class="t-edge" x="315" y="111" text-anchor="middle">purchased</text><text class="t-edge" x="315" y="124" text-anchor="middle">recent_views[ ]</text><path class="edge" d="M754 150 H640 V90 H619" marker-end="url(#ah)"/><text class="t-edge" x="690" y="144" text-anchor="middle">product_id</text><path class="edge" d="M754 386 H619" marker-end="url(#ah)"/><text class="t-edge" x="684" y="380" text-anchor="middle">product_id</text><path class="edge" d="M246 501 H300 V468 H381" marker-end="url(#ah)"/><text class="t-edge" x="335" y="462" text-anchor="middle">recent_views[ ]</text><path class="edge" d="M60 630 V520" marker-end="url(#ah)"/><text class="t-edge" x="68" y="577" text-anchor="start">request_id</text><path class="edge" d="M385 672 H250" marker-end="url(#ah)"/><text class="t-edge" x="315" y="666" text-anchor="middle">request_id</text><path class="edge logic" d="M200 516 V542 H869 V452"/><text class="t-edge" x="560" y="536" text-anchor="middle">user_id · session_id (unión lógica, sin clave)</text><path class="edge logic" d="M131 40 V16 H869 V40"/><text class="t-edge" x="500" y="30" text-anchor="middle">user_id (unión lógica, sin clave)</text></svg></div>
+      <div class="legend">
+        <span><i class="dot d-ref"></i>Referencia</span><span><i class="dot d-hist"></i>Histórico</span><span><i class="dot d-live"></i>En vivo</span><span><i class="dot d-team"></i>team_03</span>
+        <span><b class="k">azul</b> = clave de unión</span><span><i>cursiva</i> = usuario o sesión</span>
+      </div>
+      <figcaption>Las flechas continuas son uniones por clave: la punta señala la tabla que define el valor. <span class="mono">[ ]→</span> significa que la columna es un array de product_id. Las líneas discontinuas son uniones lógicas por usuario o sesión, que no apuntan a ninguna tabla maestra. La esquina superior derecha de cada caja indica el número de filas. No se dibujan, para no saturar, las referencias de <span class="mono">feedback.shown</span>, <span class="mono">clicked</span> y <span class="mono">purchased</span> al catálogo.</figcaption>
+    </figure>
+  </section>
+
+  <section aria-labelledby="flow">
+    <div class="eyebrow">Parte 3 · El ciclo</div>
+    <h2 id="flow">Qué pasa con una petición</h2>
+    <div class="pipe" role="img" aria-label="Flujo: shop.requests, nuestro sistema, team_03.submissions, simulador oculto y team_03.feedback, que vuelve a nuestro sistema. shop.events y shop.catalog_updates alimentan nuestro sistema.">
+      <div class="node n-live"><b>shop.requests</b><span>llega un comprador</span></div><span class="to">→</span>
+      <div class="node"><b>nuestro sistema</b><span>pull → recommend → push</span></div><span class="to">→</span>
+      <div class="node n-team"><b>team_03.submissions</b><span>10 product_id</span></div><span class="to">→</span>
+      <div class="node"><b>simulador oculto</b><span>decide clic y compra</span></div><span class="to">→</span>
+      <div class="node n-team"><b>team_03.feedback</b><span>resultado</span></div><span class="to">↺</span>
+      <div class="note">En paralelo, <span class="mono">shop.events</span> (tendencias) y <span class="mono">shop.catalog_updates</span> (precios, stock, productos nuevos) alimentan nuestro sistema. El feedback vuelve a él para aprender.</div>
+    </div>
+    <div class="tablewrap"><table class="plain">
+      <thead><tr><th>Tiempo</th><th>Tabla</th><th>Qué se escribe</th></tr></thead>
+      <tbody>
+        <tr><td class="when">t = 0</td><td class="mono">shop.requests</td><td>Llega la fila con <span class="mono">request_id</span>, <span class="mono">user_id</span>, <span class="mono">is_new_user</span>, <span class="mono">context</span> y <span class="mono">recent_views</span>. Empiezan a contar los 3 s.</td></tr>
+        <tr><td class="when">≈ 0,3 s</td><td>(nuestro sistema)</td><td>La lee, junto con lo que tenga en caché: catálogo vigente, popularidad, historial del usuario.</td></tr>
+        <tr><td class="when">≈ 1,1 s</td><td class="mono">team_03.submissions</td><td>Insertamos <span class="mono">{request_id, items[10], model_version}</span> en un lote junto con otras respuestas. Hoy el p50 es de 1,1 s y el p95, de 1,9 s.</td></tr>
+        <tr><td class="when">3 s</td><td>(plazo)</td><td>Si no hay respuesta válida, el comprador ve el fallback.</td></tr>
+        <tr><td class="when">≈ 5 s</td><td class="mono">team_03.feedback</td><td>Una fila con <span class="mono">served_by</span>, <span class="mono">latency_ms</span>, lo que se vio (<span class="mono">shown</span>), <span class="mono">clicked</span>, <span class="mono">purchased</span> y <span class="mono">revenue_eur</span>.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="small">Tiempos aproximados del baseline que tenemos en marcha.</p>
+  </section>
+
+  <hr class="part">
+
+  <section aria-labelledby="cols">
+    <div class="eyebrow">Parte 4 · Referencia</div>
+    <h2 id="cols">Todas las columnas</h2>
+    <p class="small">Bajo cada nombre aparece el tipo real guardado y, si la tiene, su relación: <span class="mono">PK</span> identifica la fila, <span class="mono">→ product</span> apunta al catálogo, <span class="mono">[ ] → product</span> es un array de product_id.</p>
+    <div class="sub"><h3>Referencia</h3><div class="tables"><article class="tcard g-ref"><div class="thead"><div class="trow"><h3>shop.catalog</h3><span class="pill p-ref">Referencia</span></div><span>Un producto por fila. Foto del catálogo al inicio.</span><span class="small">5.000 filas · solo lectura</span></div><table><tbody><tr><td class="k">product_id<span class="tag">String · PK</span></td><td>ID opaco del producto. Clave de todo el modelo.</td></tr><tr><td>category<span class="tag">String</span></td><td>Categoría principal. 10 valores (Books &amp; Media, Toys &amp; Baby, Pets…).</td></tr><tr><td>subcategory<span class="tag">String</span></td><td>Subcategoría. 89 valores, unos 9 por categoría.</td></tr><tr><td>brand<span class="tag">String</span></td><td>Marca. 80 en total, 8 por categoría.</td></tr><tr><td>price_eur<span class="tag">Float64</span></td><td>Precio al inicio, de 1,99 a 643,99 € (media 47). Los cambios llegan por catalog_updates.</td></tr><tr><td>description<span class="tag">String</span></td><td>Una o dos frases de plantilla: marca + subcategoría + 1–2 atributos. Útil para embeddings de productos nuevos.</td></tr><tr><td>created_at<span class="tag">DateTime64</span></td><td>Alta del producto, de 2024-05 a 2026-09.</td></tr><tr><td>is_active<span class="tag">Bool</span></td><td>En este snapshot, todos true. Las bajas de stock llegan por catalog_updates.</td></tr></tbody></table></article><article class="tcard g-ref"><div class="thead"><div class="trow"><h3>shop.catalog_updates</h3><span class="pill p-ref">Referencia · en vivo</span></div><span>Un cambio por fila, añadido durante el evento. Catálogo vigente = catalog + último cambio de cada producto.</span><span class="small">846 filas · solo lectura · append-only</span></div><table><tbody><tr><td class="k">product_id<span class="tag">String · → product</span></td><td>Producto que cambia (o el nuevo).</td></tr><tr><td>change<span class="tag">String</span></td><td>new_product · price_change · out_of_stock · back_in_stock.</td></tr><tr><td>ts<span class="tag">DateTime64</span></td><td>Momento del cambio. Llegan en ticks cada 5 min.</td></tr><tr><td>is_active<span class="tag">Bool</span></td><td>Estado tras el cambio. false = sin stock: recomendarlo invalida la lista.</td></tr><tr><td>price_eur<span class="tag">Float64</span></td><td>Precio tras el cambio. Las 620 bajadas del sábado fueron de −15 a −20 %.</td></tr><tr><td>category<span class="tag">String</span></td><td>El producto completo tras el cambio: misma forma que catalog.</td></tr><tr><td>subcategory<span class="tag">String</span></td><td></td></tr><tr><td>brand<span class="tag">String</span></td><td></td></tr><tr><td>description<span class="tag">String</span></td><td>En new_product, el único dato del producto para el cold start.</td></tr><tr><td>created_at<span class="tag">DateTime64</span></td><td>En new_product, la fecha del evento.</td></tr></tbody></table></article></div></div>
+    <div class="sub"><h3>Histórico</h3><div class="tables"><article class="tcard g-hist"><div class="thead"><div class="trow"><h3>shop.history_sessions</h3><span class="pill p-hist">Histórico</span></div><span>Una impresión del carrusel antiguo por fila: qué mostró, qué se clicó y qué se compró.</span><span class="small">2.000.000 filas · solo lectura</span></div><table><tbody><tr><td class="k">request_id<span class="tag">String · PK</span></td><td>ID de la impresión del carrusel antiguo.</td></tr><tr><td>ts<span class="tag">DateTime64</span></td><td>Momento de la impresión. 15/09 → 14/11 (60 días).</td></tr><tr><td class="u">user_id<span class="tag">String · usuario</span></td><td>Usuario. 59.697 distintos.</td></tr><tr><td>context.device<span class="tag">String</span></td><td>web · ios · android.</td></tr><tr><td>context.region<span class="tag">String</span></td><td>10 comunidades autónomas.</td></tr><tr><td>context.page<span class="tag">String</span></td><td>home · product · category.</td></tr><tr><td class="k">recent_views<span class="tag">Array(JSON) · [ ] → product</span></td><td>Lista de {product_id, ts} vistos antes en la sesión, en orden. Vacía en home.</td></tr><tr><td class="k">shown<span class="tag">Array(String) · [ ] → product</span></td><td>Los 10 productos mostrados, en orden de posición.</td></tr><tr><td>propensity<span class="tag">Array(Float64)</span></td><td>Prob. de que el sistema antiguo pusiera cada producto en su posición. Alineado con shown. Hay ceros.</td></tr><tr><td class="k">clicked<span class="tag">String | NULL · → product</span></td><td>Producto clicado. NULL en el 96 % de los casos.</td></tr><tr><td class="k">purchased<span class="tag">String | NULL · → product</span></td><td>Producto comprado (siempre igual a clicked). NULL en el 99 %.</td></tr><tr><td>revenue_eur<span class="tag">Float64</span></td><td>Ingreso de la impresión, 0 si no hay compra.</td></tr></tbody></table></article><article class="tcard g-hist"><div class="thead"><div class="trow"><h3>shop.history_events</h3><span class="pill p-hist">Histórico</span></div><span>Un evento orgánico por fila (fuera del carrusel): vistas, carritos y compras.</span><span class="small">11.996.560 filas · solo lectura</span></div><table><tbody><tr><td>ts<span class="tag">DateTime64</span></td><td>Momento del evento. 15/09 → 14/11.</td></tr><tr><td>event_type<span class="tag">String</span></td><td>view · add_to_cart · purchase.</td></tr><tr><td class="u">user_id<span class="tag">String · usuario</span></td><td>Usuario. 59.840 distintos.</td></tr><tr><td class="u">session_id<span class="tag">String · sesión</span></td><td>Sesión. 2,5 millones distintas.</td></tr><tr><td class="k">product_id<span class="tag">String · → product</span></td><td>Producto del evento.</td></tr><tr><td>price_eur<span class="tag">Float64</span></td><td>Precio en el momento del evento.</td></tr><tr><td>device<span class="tag">String</span></td><td>web · ios · android (plano, no está en context).</td></tr><tr><td>region<span class="tag">String</span></td><td>10 comunidades autónomas.</td></tr></tbody></table></article></div></div>
+    <div class="sub"><h3>En vivo</h3><div class="tables"><article class="tcard g-live"><div class="thead"><div class="trow"><h3>shop.requests</h3><span class="pill p-live">En vivo</span></div><span>Un comprador que llega al carrusel por fila, 3 por segundo, día y noche. Es lo que respondemos.</span><span class="small">23.674 filas · solo lectura · append-only</span></div><table><tbody><tr><td class="k">request_id<span class="tag">String · PK</span></td><td>ID de la petición. Es el que hay que devolver en submissions.</td></tr><tr><td>ts<span class="tag">DateTime64</span></td><td>Llegada. Los 3 s cuentan desde aquí.</td></tr><tr><td class="u">user_id<span class="tag">String · usuario</span></td><td>Usuario. Si no es nuevo, está en history_events.</td></tr><tr><td>is_new_user<span class="tag">Bool</span></td><td>true en el 30 %: sin historial. Cuenta como cold start.</td></tr><tr><td>context.device<span class="tag">String</span></td><td>web · ios · android.</td></tr><tr><td>context.region<span class="tag">String</span></td><td>10 comunidades autónomas.</td></tr><tr><td>context.page<span class="tag">String</span></td><td>product 57 % · category 24 % · home 20 %.</td></tr><tr><td class="k">recent_views<span class="tag">Array(JSON) · [ ] → product</span></td><td>Lista de {product_id, ts} de la sesión actual, en orden. Vacía en home.</td></tr></tbody></table></article><article class="tcard g-live"><div class="thead"><div class="trow"><h3>shop.events</h3><span class="pill p-live">En vivo</span></div><span>Actividad orgánica en tiempo real, mismo formato que history_events. Aquí se ven las tendencias.</span><span class="small">525.968 filas · solo lectura · append-only</span></div><table><tbody><tr><td>ts<span class="tag">DateTime64</span></td><td>Momento del evento. ~66 por segundo.</td></tr><tr><td>event_type<span class="tag">String</span></td><td>view · add_to_cart · purchase.</td></tr><tr><td class="u">user_id<span class="tag">String · usuario</span></td><td>Usuario. El 30 % de los eventos son de usuarios sin histórico.</td></tr><tr><td class="u">session_id<span class="tag">String · sesión</span></td><td>Sesión.</td></tr><tr><td class="k">product_id<span class="tag">String · → product</span></td><td>Producto. Incluye los productos nuevos del evento.</td></tr><tr><td>price_eur<span class="tag">Float64</span></td><td>Precio vigente (refleja las bajadas de precio).</td></tr><tr><td>device<span class="tag">String</span></td><td>web · ios · android.</td></tr><tr><td>region<span class="tag">String</span></td><td>10 comunidades autónomas.</td></tr></tbody></table></article></div></div>
+    <div class="sub"><h3>Nuestra · team_03</h3><div class="tables"><article class="tcard g-team"><div class="thead"><div class="trow"><h3>team_03.submissions</h3><span class="pill p-team">Nuestra</span></div><span>Una respuesta nuestra por fila. La escribimos nosotros en lotes.</span><span class="small">3.801 filas · lectura y escritura</span></div><table><tbody><tr><td class="k">request_id<span class="tag">String · → request</span></td><td>Petición que respondemos. Una sola respuesta por petición.</td></tr><tr><td class="k">items<span class="tag">Array(String) · [ ] → product</span></td><td>10 product_id distintos y activos, en orden: la posición 1 es la que más se ve.</td></tr><tr><td>model_version<span class="tag">String</span></td><td>Etiqueta libre. Sirve para comparar versiones en el feedback.</td></tr></tbody></table></article><article class="tcard g-team"><div class="thead"><div class="trow"><h3>team_03.feedback</h3><span class="pill p-team">Nuestra</span></div><span>Un resultado por petición, incluidas las que no respondimos. Solo lo vemos nosotros.</span><span class="small">10.336 filas · solo lectura</span></div><table><tbody><tr><td class="k">request_id<span class="tag">String · → request</span></td><td>Petición. La fila &#x27;__init__&#x27; es un relleno: ignorarla.</td></tr><tr><td>ts<span class="tag">DateTime64</span></td><td>Cuándo se escribió el resultado, unos segundos después del plazo.</td></tr><tr><td>served_by<span class="tag">String</span></td><td>team = nuestra respuesta · fallback = la de reserva.</td></tr><tr><td>fallback_reason<span class="tag">String</span></td><td>&#x27;&#x27; · missing · late · invalid.</td></tr><tr><td>latency_ms<span class="tag">Int64 | NULL</span></td><td>Nuestra latencia desde el ts de la petición. NULL si missing.</td></tr><tr><td class="k">shown<span class="tag">Array(String) · [ ] → product</span></td><td>Lo que vio de verdad el comprador.</td></tr><tr><td class="k">clicked<span class="tag">String · → product</span></td><td>Producto clicado, o &#x27;&#x27; si nada.</td></tr><tr><td class="k">purchased<span class="tag">String · → product</span></td><td>Producto comprado, o &#x27;&#x27; si nada.</td></tr><tr><td>revenue_eur<span class="tag">Float64</span></td><td>Ingreso realizado.</td></tr></tbody></table></article><article class="tcard g-team"><div class="thead"><div class="trow"><h3>team_03.scratch</h3><span class="pill p-team">Nuestra</span></div><span>Almacén libre para lo que queramos guardar en RawTree.</span><span class="small">0 filas · lectura y escritura</span></div><table><tbody><tr><td>{ JSON libre }<span class="tag">—</span></td><td>Tabla vacía y sin esquema: las columnas aparecen al insertar. Para features, embeddings o resultados de modelo.</td></tr></tbody></table></article></div></div>
+  </section>
+
+  <section aria-labelledby="joins">
+    <div class="eyebrow">Parte 5 · Uniones habituales</div>
+    <h2 id="joins">Cómo cruzar las tablas</h2>
+    <div class="recipes">
+      <div class="recipe"><h3>Catálogo vigente (precio y stock de ahora)</h3><p>El catálogo inicial con el último cambio de cada producto aplicado encima.</p>
+<pre class="formula">SELECT product_id,
+  argMax(price_eur, v) AS price_eur,
+  argMax(is_active, v) AS is_active
+FROM (
+  SELECT product_id::String AS product_id,
+    price_eur::Float64 AS price_eur,
+    is_active::Bool AS is_active, '' AS v
+  FROM shop.catalog
+  UNION ALL
+  SELECT product_id::String, price_eur::Float64,
+    is_active::Bool, toString(ts)
+  FROM shop.catalog_updates)
+GROUP BY product_id</pre></div>
+      <div class="recipe"><h3>Producto visto → su categoría</h3><p>Abrir <span class="mono">recent_views</span> y unirlo con el catálogo.</p>
+<pre class="formula">SELECT r.request_id::String AS request_id,
+  c.category::String AS category
+FROM (
+  SELECT request_id, arrayElement(
+    arrayMap(x -> x.product_id::String,
+      recent_views::Array(JSON)), -1) AS last
+  FROM shop.requests
+  WHERE length(recent_views) > 0) AS r
+JOIN shop.catalog AS c
+  ON c.product_id::String = r.last</pre></div>
+      <div class="recipe"><h3>Petición → nuestra respuesta → resultado</h3><p><span class="mono">request_id</span> une las tres tablas del ciclo.</p>
+<pre class="formula">SELECT r.context.page::String AS page,
+  count() AS n,
+  countIf(f.purchased::String != '') / n AS conv
+FROM team_03.feedback AS f
+JOIN shop.requests AS r
+  ON r.request_id::String = f.request_id::String
+WHERE f.served_by::String = 'team'
+GROUP BY page</pre></div>
+      <div class="recipe"><h3>Usuario conocido → su historial</h3><p>El 70 % de las peticiones son de usuarios con historial en <span class="mono">history_events</span>.</p>
+<pre class="formula">SELECT e.product_id::String AS product_id,
+  countIf(e.event_type = 'purchase') AS bought
+FROM shop.history_events AS e
+WHERE e.user_id::String = 'u_…'
+GROUP BY product_id
+ORDER BY bought DESC</pre></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="traps">
+    <div class="eyebrow">Parte 6 · Comprobado con los datos</div>
+    <h2 id="traps">Trampas de RawTree y de los datos</h2>
+    <ul class="checklist">
+      <li><b>SHOW TABLES</b><span>No está permitido. Usa <span class="mono">SELECT name, total_rows FROM system.tables WHERE database = 'shop'</span>.</span></li>
+      <li><b>arrays de JSON</b><span><span class="mono">recent_views</span> hay que convertirlo antes: <span class="mono">recent_views::Array(JSON)</span>. Sin la conversión, <span class="mono">arrayMap</span> falla.</span></li>
+      <li><b>countIf / OR</b><span>Los Bool necesitan conversión: <span class="mono">countIf(is_new_user::Bool)</span>.</span></li>
+      <li><b>uniq · argMax · JOIN</b><span>Necesitan tipos concretos: <span class="mono">uniq(product_id::String)</span>.</span></li>
+      <li><b>vacío ≠ NULL</b><span>En <span class="mono">history_sessions</span>, sin clic es <span class="mono">NULL</span>. En <span class="mono">feedback</span>, es <span class="mono">''</span>.</span></li>
+      <li><b>propensity = 0</b><span>Existe. Excluye esas filas o pon un mínimo antes de dividir por la propensity en IPS.</span></li>
+      <li><b>shown antiguo</b><span>El sistema antiguo solo mostraba productos de la categoría del último visto. Un clic en <span class="mono">history_sessions</span> nunca te dirá nada fuera de esa categoría.</span></li>
+      <li><b>stock</b><span>Un solo producto con <span class="mono">is_active = false</span> invalida las 10 recomendaciones. Comprueba el stock justo antes de cada envío.</span></li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>Construido a partir de consultas a RawTree con la clave de team_03 (sábado 14/11/2026, ~11:15 UTC). Los recuentos de las tablas en vivo crecen continuamente.</span>
+    <span>Fuentes: README del starter kit, datathon.rawtree.dev y los datos.</span>
+  </footer>
+</main>
