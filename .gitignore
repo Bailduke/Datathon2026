@@ -12,6 +12,10 @@ __pycache__/
 datathon-fme-2026/
 # credenciales RawTree
 .env
+# recommender-v2: priors en memòria cau i logs
+.cache/
+logs/
+
 # estado local / cachés
 state/
 .pytest_cache/
