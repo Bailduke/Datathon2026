@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
-"""recommender-v4.py · modelo "tengo-aurilla-v0" (jerárquico factorizado).
+"""recommender-v4.py · modelo "tengo-aurilla" (jerárquico factorizado + afinidad usuario-producto).
 
-La probabilidad de que el usuario u compre el producto i se factoriza en tres niveles:
+Puntuación del producto i para el usuario u en una petición:
 
-    P(i | u, sesión) = P(c | u, sesión) · P(s | c, u, sesión) · P(i | s, u, contexto)
-                       categoría           subcategoría           producto
-                       (1 Dirichlet)       (10 Dirichlet)         (logit condicional)
+    score(i) = P_jer(i)^theta · A(u, i)
 
-  Niveles 1 y 2  Dirichlet-Multinomial por usuario: prior poblacional fija × kappa, más recuentos
-                 fraccionados del usuario (compra 1, carrito 0,25, vista 0,02; sin decaimiento) y la
-                 sesión actual como pseudo-recuentos temporales (pesos lam_cat y lam_sub).
-  Nivel 3        Logit condicional sobre los productos elegibles de la subcategoría:
-                 V_i = b_pop·log(pop_i) + pos_i·(b_p0 + b_u·r_u + b_dev + b_reg) + b_sale·rebajado_i
-                       + b_seen·visto_i + b_cart·carrito_ui
-                 carrito_ui = 1 si el usuario metió i en el carrito y aún no lo ha comprado;
-                 pop_i = cuota de compras Gamma-Poisson (histórico + stream en vivo);
-                 pos_i = posición de precio dentro de la subcategoría; r_u = perfil de precio del usuario.
-  Selección      P(i) solo para productos elegibles (en stock y no comprados por el usuario); se
-                 envían los 10 de mayor P(i), de mayor a menor. Exploración: Thompson Sampling sobre
-                 la popularidad (Gamma); el slot 1 usa siempre las medias.
+  P_jer        Probabilidad jerárquica P(c | u, sesión) · P(s | c, u, sesión) · P(i | s, u, contexto):
+               niveles 1 y 2 Dirichlet-multinomial por usuario (prior poblacional × kappa + recuentos
+               fraccionados compra 1 / carrito 0,25 / vista 0,02, sin decaimiento + la sesión como
+               pseudo-recuentos); nivel 3 logit condicional dentro de la subcategoría:
+               V_i = b_pop·log(pop_i) + pos_i·(b_p0 + b_u·r_u + b_dev + b_reg) + b_sale·rebajado_i,
+               con pop_i la cuota de compras Gamma-Poisson (histórico + stream en vivo).
+  A(u, i)      Afinidad usuario-producto, FUERA del anidamiento (multiplica, no redistribuye):
+               · clases: en el carrito durante el stream (g_lc, d_lc), en el carrito histórico (g_hc),
+                 último visto de la sesión (g_v0), visto antes en la sesión (g_v1);
+               · gustos latentes, con cuatro "cestas" del usuario (historia, sesión, carrito de hoy y
+                 vistas de hoy): perfil de etiquetas (cada descripción de producto lleva 2 de 20
+                 etiquetas; Dirichlet-multinomial) y vector de co-compra (16 factores latentes del
+                 log-lift producto-producto, una vez descontado lo que ya explica la jerarquía).
+  Selección    Solo productos elegibles (en stock y no comprados por el usuario: saciedad); se envían
+               los 10 de mayor score, de mayor a menor. Exploración: Thompson Sampling sobre la
+               popularidad (Gamma); el slot 1 usa siempre las medias.
 
-Todos los parámetros libres (kappa_c, kappa_s, lam_cat, lam_sub, betas) se estiman por máxima
-verosimilitud con separación temporal del histórico (ver build_priors) y se guardan en .cache/.
+Estimación: kappa, lambda y los betas del nivel 3, por máxima verosimilitud con separación temporal
+del histórico (build_priors). theta y toda la afinidad, con NUESTRO feedback en vivo: se reproduce el
+stream en orden y se ajusta compra_ij ~ Poisson(w_slot · exp(a) · score) (calibrate_live, --calibrate).
 Las derivaciones están en modelo.tex / modelo.pdf (esta misma carpeta).
 
 Uso, desde la raíz del repo y con el .env del equipo:
   .venv/bin/python tengo-aurilla-v0/recommender-v4.py --build        # estima y guarda los priors
   .venv/bin/python tengo-aurilla-v0/recommender-v4.py --eval 3000    # evaluación offline (últimos 7 días)
+  .venv/bin/python tengo-aurilla-v0/recommender-v4.py --calibrate    # reestima la afinidad con el feedback en vivo
+                                                                     # (2-3 min; no lanzarlo durante la final)
   .venv/bin/python tengo-aurilla-v0/recommender-v4.py --smoke        # responde 30 peticiones reales sin enviar
   .venv/bin/python tengo-aurilla-v0/recommender-v4.py --dry-run      # sistema completo sin escribir en RawTree
   .venv/bin/python tengo-aurilla-v0/recommender-v4.py                # EN VIVO
@@ -69,7 +74,7 @@ HIST_T0 = "2026-09-15 07:00:00"          # inicio del histórico (UTC)
 # =============================================================================
 @dataclass
 class Config:
-    model_version: str = "tengo-aurilla-v0"
+    model_version: str = "tengo-aurilla-v2"
     # --- niveles 1-2: recuentos fraccionados y sesión
     w_purchase: float = 1.0
     w_cart: float = 0.25
@@ -84,6 +89,13 @@ class Config:
     thompson: bool = True                # muestrea la popularidad (Gamma) en cada petición
     exploit_slot1: bool = True           # el slot 1 usa siempre las medias
     max_per_sub: int = 0                 # 0 = sin límite por subcategoría (modelo acordado)
+    taste: bool = True                   # gustos latentes del usuario: etiquetas de la descripción + co-compra
+    taste_k: int = 16                    # nº de factores de co-compra (16 predice mejor que la matriz completa)
+    taste_smooth: float = 2.0            # suavizado del lift de co-compra
+    taste_shrink: tuple = (3.0, 1.0, 1.0, 1.0)   # encogimiento de la media por cesta: historia, sesión, carrito hoy, vistas hoy
+    tag_alpha: float = 6.0               # fuerza del prior uniforme del perfil de etiquetas (Dirichlet)
+    session_mix: bool = False            # True: la sesión como mezcla de peso fijo en P(c). Probado el sábado con
+                                         # 877 mil impresiones: no mejora (logver -4194,5 frente a -4193,6) -> desactivado
     # --- valores por defecto si un parámetro no se puede estimar
     default_beta_sale: float = 0.10
     default_beta_seen: float = 1.0
@@ -112,6 +124,29 @@ class Config:
 
 CFG = Config()
 log = logging.getLogger("v4")
+
+# Afinidad usuario-producto: multiplicadores de la probabilidad jerárquica (fuera del anidamiento).
+# Valores estimados el sábado con 877.350 impresiones propias (614 compras); se reestiman con --calibrate.
+#   theta : exponente de la probabilidad jerárquica (1 = bien calibrada; estimado 1,03 ± 0,04)
+#   g_lc  : producto que el usuario ha metido en el carrito durante el stream (y no ha comprado), en P = p_ref
+#   d_lc  : para ese carrito "de hoy" el contexto pesa menos: multiplicador = exp(g_lc) · (P / p_ref)^(-d_lc)
+#   g_hc  : producto en el carrito histórico, sin comprar · g_v0 / g_v1: último visto / visto antes en la sesión
+P_REF = 1e-3
+# Gustos latentes. Cada producto lleva en su descripción 2 de estas 20 etiquetas; el usuario tiene un perfil de
+# etiquetas (Dirichlet-multinomial) y un vector de gustos (factores de co-compra) por cada "cesta":
+# historia (compras + carrito), sesión (recent_views), carrito de hoy y vistas de hoy.
+TAGS = ("compact and lightweight", "a family-size format", "a luxury feel", "a sporty style", "premium materials",
+        "a minimalist design", "smart app control", "bold colours", "organic ingredients",
+        "made from recycled materials", "designed for kids", "wireless connectivity", "great value for money",
+        "built for professionals", "whisper-quiet operation", "a handmade finish", "a vintage look",
+        "a waterproof shell", "extra durability", "a travel-ready build")
+K_TAGS = len(TAGS)
+N_BASKETS = 4
+TASTE_NAMES = ("cf_hist", "cf_sesion", "cf_carrito_hoy", "cf_vistas_hoy", "tag_hist", "tag_sesion", "tag_carrito_hoy",
+               "tag_vistas_hoy")
+AFF: dict | None = None                  # factores de co-compra y etiquetas (load_affinity)
+TILT_DEFAULT = dict(theta=1.0, g_lc=3.7, d_lc=0.6, g_hc=1.2, g_v0=1.9, g_v1=1.3)
+TILT_BOUNDS = dict(theta=(0.7, 1.4), g_lc=(0.0, 6.0), d_lc=(0.0, 0.9), g_hc=(0.0, 4.0), g_v0=(0.0, 4.0), g_v1=(0.0, 4.0))
 
 
 # =============================================================================
@@ -896,13 +931,86 @@ def load_or_build(rt: RawTree, cfg: Config, cut_day: int | None, force: bool, ma
                 return P
         except Exception as e:  # noqa: BLE001
             log.warning("[build] no se pudo leer %s: %s", path, e)
+    prev: dict = {}
+    if path.exists() and cut_day is None:                  # la afinidad calibrada con --calibrate se conserva
+        try:
+            prev = pickle.loads(path.read_bytes()).get("params", {})
+        except Exception:  # noqa: BLE001
+            prev = {}
     P = build_priors(rt, cfg, cut_day)
+    for k in (*TILT_DEFAULT, "taste"):
+        if k in prev and k not in P["params"]:
+            P["params"][k] = prev[k]
     path.write_bytes(pickle.dumps(P, protocol=pickle.HIGHEST_PROTOCOL))
     (CACHE / path.name.replace(".pkl", "_params.json")).write_text(
         json.dumps({"params": P["params"], "diag": P["diag"], "w_pos": P["w_pos"].tolist()}, indent=1,
                    ensure_ascii=False, default=str))
     log.info("[build] guardado en %s (%.0f MB)", path, path.stat().st_size / 1e6)
     return P
+
+
+def parse_tags(desc) -> list[int]:
+    d = str(desc or "").lower()
+    return [k for k, t in enumerate(TAGS) if t in d][:2]
+
+
+def load_affinity(rt: RawTree, P: dict, cfg: Config) -> dict:
+    """Etiquetas de cada producto y factores latentes de co-compra (caché en .cache/afinidad.npz).
+
+    Co-compra: con las cestas históricas (compras + carrito) se calcula el log-lift suavizado de cada par de
+    productos, se le resta la media de su nivel de parentesco (misma subcategoría / misma categoría / resto,
+    que ya recoge la jerarquía) y se queda con sus k direcciones principales: L ~ F · diag(signo) · F'."""
+    global AFF
+    path = CACHE / "afinidad.npz"
+    n = len(P["ids"])
+    if path.exists():
+        try:
+            z = np.load(path)
+            if float(z["built_at"]) == float(P["built_at"]) and z["F"].shape == (n, cfg.taste_k) \
+                    and float(z["smooth"]) == cfg.taste_smooth:
+                AFF = dict(F=z["F"], sg=z["sg"], tags=z["tags"], eig=z["eig"])
+                return AFF
+        except Exception as e:  # noqa: BLE001
+            log.warning("[afinidad] no se pudo leer %s: %s", path.name, e)
+    t0 = time.time()
+    C = np.zeros((n, n), np.float32)
+    cnt = np.zeros(n, np.float32)
+    users = set(P["bought"]) | set(P["carted"])
+    for u in users:
+        hb = set(P["bought"].get(u, ())) | set(P["carted"].get(u, ()))
+        b = np.fromiter(hb, np.int64, len(hb))
+        b = b[b < n]
+        if b.size:
+            cnt[b] += 1
+            if b.size > 1:
+                C[np.ix_(b, b)] += 1
+    np.fill_diagonal(C, 0)
+    a = cfg.taste_smooth
+    L = np.log((C + a) / (np.outer(cnt, cnt) / max(len(users), 1) + a)).astype(np.float64)
+    del C
+    sub, cat = np.asarray(P["sub"]), np.asarray(P["cat"])
+    same_s = sub[:, None] == sub[None, :]
+    same_c = cat[:, None] == cat[None, :]
+    for m in (same_s, same_c & ~same_s, ~same_c):
+        L[m] -= L[m].mean()
+    np.fill_diagonal(L, 0)
+    w, V = np.linalg.eigh(L)
+    o = np.argsort(-np.abs(w))[:cfg.taste_k]
+    F = (V[:, o] * np.sqrt(np.abs(w[o]))).astype(np.float32)
+    sg = np.sign(w[o]).astype(np.float32)
+    tags = np.full((n, 2), -1, np.int16)
+    idx = {p: i for i, p in enumerate(P["ids"])}
+    for r in rt.query("SELECT product_id::String AS p, toString(description) AS d FROM shop.catalog", 120):
+        i = idx.get(r["p"])
+        if i is not None:
+            ts = parse_tags(r["d"])
+            tags[i, :len(ts)] = ts
+    np.savez_compressed(path, F=F, sg=sg, tags=tags, eig=w[o], built_at=P["built_at"], smooth=a)
+    log.info("[afinidad] %d cestas históricas -> %d factores de co-compra (autovalores %s) · %d productos con "
+             "etiquetas · %.0f s", len(users), cfg.taste_k, np.round(w[o][:6], 0).tolist(), int((tags[:, 0] >= 0).sum()),
+             time.time() - t0)
+    AFF = dict(F=F, sg=sg, tags=tags, eig=w[o])
+    return AFF
 
 
 # =============================================================================
@@ -939,7 +1047,8 @@ class UserStore:
 class Snapshot:
     """Lo que lee answer(). No se modifica después de publicarse."""
     __slots__ = ("n", "ids", "index", "sub", "cat", "ok", "pos", "g_shape", "g_rate", "expV0", "sale_mult",
-                 "sub_cat", "pi_c", "pi_s", "users", "bought", "carted", "popular", "is_new", "price", "prm", "ns", "nc")
+                 "sub_cat", "pi_c", "pi_s", "users", "bought", "carted", "carted_live", "popular", "is_new", "price",
+                 "prm", "ns", "nc", "F", "Fs", "selfdot", "tagmat", "bought_hist", "viewed_live")
 
     def __init__(self, **kw):
         for k, v in kw.items():
@@ -992,15 +1101,40 @@ class State:
         self.m_sub[:len(self.subs)] = P["m_sub"]
         self.users = UserStore(P["users"], P["N"], P["ru_sum"], P["ru_n"], self.ns_max)
         self.bought: dict[str, frozenset] = dict(P["bought"])
-        self.carted: dict[str, frozenset] = dict(P["carted"])   # metido en el carrito alguna vez
+        self.carted: dict[str, frozenset] = dict(P["carted"])   # carrito HISTÓRICO (antes del stream)
+        self.carted_live: dict[str, frozenset] = {}             # metido en el carrito durante el stream
+        self.viewed_live: dict[str, frozenset] = {}             # visto durante el stream (shop.events)
+        self.bought_hist: dict[str, frozenset] = P["bought"]    # compras del histórico (no se modifica)
+        k = cfg.taste_k
+        self.F = np.zeros((NM, k), np.float32)                  # factores de co-compra (productos nuevos: 0)
+        self.tagmat = np.zeros((NM, K_TAGS), np.float32)        # etiquetas de cada producto (dos unos por fila)
+        sg = np.ones(k, np.float32)
+        if AFF is not None and AFF["F"].shape == (n, k):
+            self.F[:n], sg = AFF["F"], AFF["sg"]
+            for j in range(AFF["tags"].shape[1]):
+                ok_ = AFF["tags"][:, j] >= 0
+                self.tagmat[np.flatnonzero(ok_), AFF["tags"][ok_, j]] = 1.0
+        self.Fs = self.F * sg
+        self.selfdot = (self.Fs * self.F).sum(1)
         self.last_change_ts: dict[str, float] = {}
         self.upos = np.full(NM, 0.5)
         self.E_s = np.full(self.ns_max, 0.5)
         self.pos_dirty = True
-        self.prm = dict(P["params"])
-        self.prm["e_seen"] = math.exp(self.prm["b_seen"])
-        self.prm["e_cart"] = math.exp(self.prm["b_cart"])
+        self.prm = self.make_params(P["params"], cfg)
         self.refresh()
+
+    @staticmethod
+    def make_params(params: dict, cfg: Config, **over) -> dict:
+        """Parámetros listos para answer(): los del modelo + los multiplicadores de afinidad ya exponenciados."""
+        prm = {**TILT_DEFAULT, "ses_mix": 1.0 if cfg.session_mix else 0.0, **params, **over}
+        for k, (lo, hi) in TILT_BOUNDS.items():
+            prm[k] = float(min(max(float(prm[k]), lo), hi))
+        prm["e_lc"], prm["e_hc"] = math.exp(prm["g_lc"]), math.exp(prm["g_hc"])
+        prm["e_v0"], prm["e_v1"] = math.exp(prm["g_v0"]), math.exp(prm["g_v1"])
+        t = np.asarray(prm.get("taste") or [0.0] * (2 * N_BASKETS), float)
+        prm["taste"] = t if t.size == 2 * N_BASKETS else np.zeros(2 * N_BASKETS)
+        prm["taste_on"] = bool(cfg.taste and AFF is not None and np.any(prm["taste"] != 0))
+        return prm
 
     # --- cantidades derivadas -------------------------------------------------
     def popularity(self):
@@ -1038,7 +1172,9 @@ class State:
                             ok=ok, pos=self.upos[:n] - 0.5, g_shape=shape, g_rate=rate, expV0=expV0,
                             sale_mult=sale_mult, sub_cat=self.sub_cat.copy(), pi_c=self.pi_c.copy(),
                             pi_s=self.pi_s.copy(), users=self.users, bought=self.bought, carted=self.carted,
-                            popular=order[ok[order]][:200],
+                            carted_live=self.carted_live, popular=order[ok[order]][:200],
+                            F=self.F, Fs=self.Fs, selfdot=self.selfdot, tagmat=self.tagmat,
+                            bought_hist=self.bought_hist, viewed_live=self.viewed_live,
                             is_new=self.is_new[:n].copy(), price=self.price[:n].copy(), prm=self.prm,
                             ns=self.ns_max, nc=self.nc_max)
             if set_global:
@@ -1062,12 +1198,18 @@ class State:
         row = self.users.get_or_create(user)
         w = cfg.w_purchase if kind == "purchase" else cfg.w_cart if kind == "add_to_cart" else cfg.w_view
         self.users.N[row, self.sub[i]] += w
-        if kind == "add_to_cart":
-            cur = self.carted.get(user)
+        if kind == "add_to_cart":                            # todos los eventos que llegan aquí son del stream
+            cur = self.carted_live.get(user)
             if cur is None:
-                self.carted[user] = frozenset((i,))
+                self.carted_live[user] = frozenset((i,))
             elif i not in cur:
-                self.carted[user] = cur | {i}
+                self.carted_live[user] = cur | {i}
+        elif kind == "view":
+            cur = self.viewed_live.get(user)
+            if cur is None:
+                self.viewed_live[user] = frozenset((i,))
+            elif i not in cur:
+                self.viewed_live[user] = cur | {i}
         if kind == "purchase":
             self.users.ru_sum[row] += self.upos[i] - self.E_s[self.sub[i]]
             self.users.ru_n[row] += 1
@@ -1075,6 +1217,18 @@ class State:
             if organic:
                 self.C_live[i] += 1
                 self.T_live += 1
+
+    def bulk_views(self, user: str, pids: list, counts: list) -> int:
+        """Vistas del stream anteriores al arranque: recuentos por subcategoría y productos vistos hoy."""
+        idx = [(self.index.get(p, -1), float(c)) for p, c in zip(pids, counts)]
+        idx = [(i, c) for i, c in idx if 0 <= i < self.n]
+        if not user or not idx:
+            return 0
+        row = self.users.get_or_create(user)
+        for i, c in idx:
+            self.users.N[row, self.sub[i]] += self.cfg.w_view * c
+        self.viewed_live[user] = (self.viewed_live.get(user) or frozenset()) | {i for i, _ in idx}
+        return len(idx)
 
     def _code(self, names: list, name: str, cap: int) -> int:
         if name in names:
@@ -1109,6 +1263,8 @@ class State:
         self.active[i] = str(r.get("active")).lower() in ("true", "1", "none", "")
         self.unavailable[i] = price <= 0
         self.is_new[i] = True
+        self.tagmat[i] = 0.0
+        self.tagmat[i, parse_tags(r.get("description"))] = 1.0   # el producto nuevo ya tiene etiquetas
         self.C_hist[i] = self.C_live[i] = 0.0
         self.T_launch[i] = self.T_live
         self.launch_ts[i] = ts
@@ -1179,19 +1335,72 @@ def answer(S: Snapshot, req: dict, rng, info: dict | None = None) -> list[str]:
     if b:
         elig[[i for i in b if i < S.n]] = False
 
-    # --- nivel 3: utilidad de producto
+    # --- nivel 3: utilidad de producto (popularidad, precio, rebaja); lo ya comprado queda fuera aquí
     g = prm["b_p0"] + prm["b_u"] * r_u + prm["b_dev"].get(device, 0.0) + prm["b_reg"].get(region, 0.0)
-    mult = np.exp(S.pos * g)
-    if views:
-        mult[views] *= prm["e_seen"]
-    c = S.carted.get(user)
-    if c:                                                    # en su carrito y sin comprar: afinidad fuerte
-        mult[[i for i in c if i < S.n]] *= prm["e_cart"]
-    mult *= elig                                             # lo ya comprado queda fuera aquí
+    mult = np.exp(S.pos * g) * elig
 
     # --- niveles 1 y 2: Dirichlet (media de la posterior)
     a_s0 = prm["kappa_s"] * S.pi_s + n_us + prm["lam_sub"] * S_s
-    a_c0 = prm["kappa_c"] * S.pi_c + np.bincount(S.sub_cat, weights=n_us + prm["lam_cat"] * S_s, minlength=S.nc)
+    a_c0 = prm["kappa_c"] * S.pi_c + np.bincount(S.sub_cat, weights=n_us, minlength=S.nc)
+    S_c = np.bincount(S.sub_cat, weights=S_s, minlength=S.nc)
+    ses = S_c.sum()
+    if ses > 0:
+        if prm["ses_mix"]:                                   # mezcla: P(c) = (1-w)·Dirichlet + w·sesión, w = lam/(1+lam)
+            a_c0 = a_c0 + prm["lam_cat"] * a_c0.sum() * S_c / ses
+        else:                                                # pseudo-recuentos: la sesión se diluye con la historia
+            a_c0 = a_c0 + prm["lam_cat"] * S_c
+
+    # --- afinidad usuario-producto: multiplica la probabilidad jerárquica, fuera del anidamiento
+    lcs = S.carted_live.get(user) or ()
+    hcs = S.carted.get(user) or ()
+    lc = [i for i in lcs if i < S.n and elig[i]]             # en el carrito durante el stream, sin comprar
+    hc = [i for i in hcs if i < S.n and elig[i] and i not in lcs]   # carrito histórico
+    theta, d_lc = prm["theta"], prm["d_lc"]
+
+    # --- gustos latentes: perfil de etiquetas y vector de co-compra de cada "cesta" del usuario
+    #     (historia, sesión, carrito de hoy, vistas de hoy); el propio producto nunca cuenta en su puntuación
+    taste, e_taste = None, None
+    if prm["taste_on"] or info is not None:
+        n = S.n
+        taste = np.zeros((2 * N_BASKETS, n))
+        hb = set(S.bought_hist.get(user) or ()) | set(hcs)
+        for c, src in enumerate((hb, views, lcs, S.viewed_live.get(user) or ())):
+            if not src:
+                continue
+            b = np.fromiter(src, np.int64, len(src))
+            b = b[b < n]
+            if b.size == 0:
+                continue
+            num = S.Fs[:n] @ S.F[b].sum(0)                   # co-compra: media encogida de L[i, j], j en la cesta
+            den = np.full(n, b.size + cfg.taste_shrink[c])
+            num[b] -= S.selfdot[b]
+            den[b] -= 1.0
+            taste[c] = num / den
+            Tb = S.tagmat[b]
+            cc = Tb.sum(0)
+            tot = float(cc.sum())
+            if tot > 0:                                      # etiquetas: suma de log(cuota / (1/K)) de sus dos etiquetas
+                al = cfg.tag_alpha
+                sc_ = S.tagmat[:n] @ np.log((cc + al / K_TAGS) / (tot + al) * K_TAGS)
+                tl = tot - Tb.sum(1)
+                sc_[b] = (Tb * np.log((cc[None, :] - Tb + al / K_TAGS) / (tl[:, None] + al) * K_TAGS)).sum(1)
+                taste[N_BASKETS + c] = sc_
+        if prm["taste_on"]:
+            e_taste = np.exp(np.clip(prm["taste"] @ taste, -8.0, 8.0))
+
+    def tilt(Pn: np.ndarray) -> np.ndarray:
+        sc = Pn.copy() if theta == 1.0 else Pn ** theta
+        if e_taste is not None:
+            sc *= e_taste
+        if views:
+            sc[views[-1]] *= prm["e_v0"]
+            if len(views) > 1:
+                sc[views[:-1]] *= prm["e_v1"]
+        if hc:
+            sc[hc] *= prm["e_hc"]
+        if lc:
+            sc[lc] *= prm["e_lc"] * (np.maximum(Pn[lc], 1e-5) / P_REF) ** (-d_lc)
+        return sc
 
     def probs(expV0: np.ndarray) -> np.ndarray:
         base = expV0 * mult
@@ -1205,10 +1414,11 @@ def answer(S: Snapshot, req: dict, rng, info: dict | None = None) -> list[str]:
         p_sub = (a_c / tot)[S.sub_cat] * a_s / np.where(A_c > 0, A_c, 1.0)[S.sub_cat]
         return p_sub[S.sub] * base / np.where(Z > 0, Z, 1.0)[S.sub]
 
-    P_mean = probs(S.expV0)
+    Pn = probs(S.expV0)                                      # probabilidad jerárquica pura
+    P_mean = tilt(Pn)
     if cfg.thompson:                                         # Thompson Sampling sobre la popularidad
         pop = rng.gamma(S.g_shape) / S.g_rate
-        P_rank = probs(pop ** prm["b_pop"] * S.sale_mult)
+        P_rank = tilt(probs(pop ** prm["b_pop"] * S.sale_mult))
     else:
         P_rank = P_mean
 
@@ -1235,7 +1445,7 @@ def answer(S: Snapshot, req: dict, rng, info: dict | None = None) -> list[str]:
             if elig[i] and i not in chosen:
                 chosen.append(i)
     if info is not None:
-        info.update(P=P_mean, chosen=chosen, r_u=r_u, g=g)
+        info.update(P=P_mean, Pn=Pn, chosen=chosen, r_u=r_u, g=g, lc=lc, hc=hc, views=views, taste=taste)
     return [S.ids[i] for i in chosen[:10]]
 
 
@@ -1484,7 +1694,7 @@ def events_loop(rt: RawTree, st: State, since: str) -> None:
 
 SQL_CATALOG_UPDATES = """SELECT product_id::String AS product_id, toString(ts::DateTime64(3)) AS ts,
  change::String AS change, toString(category) AS category, toString(subcategory) AS subcategory,
- price_eur::Float64 AS price, toString(is_active) AS active
+ price_eur::Float64 AS price, toString(is_active) AS active, ifNull(toString(description), '') AS description
 FROM shop.catalog_updates WHERE ts::DateTime64(3) > toDateTime64('{since}', 3)
 ORDER BY ts::DateTime64(3) ASC, product_id::String ASC LIMIT {limit}"""
 
@@ -1613,6 +1823,19 @@ def bootstrap_live(rt: RawTree, st: State) -> tuple[str, str]:
             log.info("[boot] eventos en vivo '%s': %d", kind, total)
         except Exception as e:  # noqa: BLE001
             log.warning("[boot] eventos %s: %s", kind, str(e)[:200])
+    try:                                                   # vistas del stream: recuentos y "visto hoy"
+        total, parts = 0, 12
+        for k in range(parts):
+            rows = rt.query(f"""SELECT u, groupArray(p) AS ps, groupArray(c) AS cs FROM (
+                    SELECT user_id::String AS u, product_id::String AS p, count() AS c FROM shop.events
+                    WHERE event_type::String = 'view' AND ts::DateTime64(3) <= toDateTime64('{wm}', 3)
+                      AND cityHash64(user_id::String) % {parts} = {k} GROUP BY u, p) GROUP BY u""", 180)
+            with st.lock:
+                for r in rows:
+                    total += st.bulk_views(r["u"], r["ps"], r["cs"])
+        log.info("[boot] vistas en vivo: %d pares usuario-producto", total)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[boot] vistas en vivo: %s", str(e)[:200])
     try:                                                   # compras totales en vivo antes de cada lanzamiento
         new_idx = np.flatnonzero(st.is_new[:st.n])
         tss = sorted({float(st.launch_ts[i]) for i in new_idx})
@@ -1660,21 +1883,27 @@ def describe(S: Snapshot, st: State, pid: str, user: str = "") -> str:
     share = S.g_shape[i] / S.g_rate[i]
     return (f"{pid} · {st.cats[S.cat[i]]} / {st.subs[S.sub[i]]} · {S.price[i]:.2f} € · cuota {1e4 * share:.2f}‱"
             f"{' [NUEVO]' if S.is_new[i] else ''}{' [REBAJADO]' if S.sale_mult[i] > 1 else ''}"
-            f"{' [EN SU CARRITO]' if i in (S.carted.get(user) or ()) else ''}"
+            f"{' [CARRITO DE HOY]' if i in (S.carted_live.get(user) or ()) else ''}"
+            f"{' [CARRITO ANTIGUO]' if i in (S.carted.get(user) or ()) else ''}"
             f"{' [YA COMPRADO]' if i in (S.bought.get(user) or ()) else ''}")
 
 
 def log_params(P: dict) -> None:
     p = P["params"]
-    log.info("[modelo] %s · kappa_c=%s kappa_s=%s lam_cat=%s lam_sub=%s · b_pop=%.3f b_p0=%.3f b_u=%.2f b_sale=%.3f "
-             "b_seen=%.2f b_cart=%.2f", CFG.model_version, p["kappa_c"], p["kappa_s"], p["lam_cat"], p["lam_sub"],
-             p["b_pop"], p["b_p0"], p["b_u"], p["b_sale"], p["b_seen"], p["b_cart"])
+    t = {k: p.get(k, TILT_DEFAULT[k]) for k in TILT_DEFAULT}
+    log.info("[modelo] %s · kappa_c=%s kappa_s=%s lam_cat=%s lam_sub=%s · b_pop=%.3f b_p0=%.3f b_u=%.2f b_sale=%.3f · "
+             "afinidad: theta=%.2f carrito de hoy g=%.2f d=%.2f · carrito antiguo g=%.2f · visto g=%.2f/%.2f",
+             CFG.model_version, p["kappa_c"], p["kappa_s"], p["lam_cat"], p["lam_sub"], p["b_pop"], p["b_p0"], p["b_u"],
+             p["b_sale"], t["theta"], t["g_lc"], t["d_lc"], t["g_hc"], t["g_v0"], t["g_v1"])
+    log.info("[modelo] gustos latentes (%s): %s", "activos" if CFG.taste and AFF is not None and p.get("taste") else
+             "sin calibrar", dict(zip(TASTE_NAMES, p.get("taste") or [])))
 
 
 def run_live(args) -> None:
     rt = make_rt()
     Clock.sync(rt)
     P = load_or_build(rt, CFG, None, args.rebuild)
+    load_affinity(rt, P, CFG)
     log_params(P)
     st = State(P, CFG)
     since_cat, since_ev = bootstrap_live(rt, st)
@@ -1726,13 +1955,263 @@ def run_smoke(rt: RawTree, st: State) -> None:
             print(f"\n--- petición {r['request_id']} · page={r.get('page')} device={r.get('device')} "
                   f"region={r.get('region')} is_new_user={r.get('is_new_user')} · perfil de precio r_u={info['r_u']:+.3f}")
             u = r.get("user_id") or ""
-            print(f"    usuario: {len(S.carted.get(u) or ())} productos en carrito, {len(S.bought.get(u) or ())} comprados")
+            print(f"    usuario: {len(info['lc'])} en el carrito de hoy, {len(info['hc'])} en el carrito antiguo (sin comprar, "
+                  f"en stock), {len(S.bought.get(u) or ())} comprados")
             for v in normalize_views(r.get("recent_views"))[-3:]:
                 print("    visto:    ", describe(S, st, v, u))
             for j, x in enumerate(items, 1):
-                print(f"    slot {j:>2}:   {describe(S, st, x, u)} · P={info['P'][S.index[x]]:.4f}")
+                i_ = S.index[x]
+                print(f"    slot {j:>2}:   {describe(S, st, x, u)}{' [VISTO]' if i_ in info['views'] else ''} · "
+                      f"P jerárquica={info['Pn'][i_]:.4f} · score={info['P'][i_]:.4f}")
     lat = np.array(lat)
     print(f"\n{len(rows)} peticiones · answer() p50={np.median(lat):.2f} ms · p99={np.percentile(lat, 99):.2f} ms · todas válidas")
+
+
+# =============================================================================
+# 7b. CALIBRACIÓN DE LA AFINIDAD USUARIO-PRODUCTO CON NUESTRO FEEDBACK (--calibrate)
+# =============================================================================
+GLM_COLS = ("const", "usuario_nuevo", "home", "theta", "g_lc", "g_hc", "g_v0", "g_v1", "ya_comprado", "lc_x_logP",
+            "sin_P") + TASTE_NAMES
+N_BASE = 11                                                # columnas anteriores a los gustos latentes
+TILT_MIN_BUYS = dict(theta=200, g_lc=30, d_lc=30, g_hc=30, g_v0=15, g_v1=15)   # compras mínimas para reestimar
+
+
+def download_feedback(rt: RawTree) -> tuple[list[dict], list[tuple], list[dict]]:
+    """Todas las listas mostradas a nuestro equipo con el contexto de su petición, los eventos del stream
+    y los cambios de catálogo (para reproducir el stock y los precios de cada instante)."""
+    fb: list[dict] = []
+    parts = 12
+    for k in range(parts):
+        fb += rt.query(f"""SELECT f.request_id::String AS rid, r.user_id::String AS user_id,
+            toUnixTimestamp64Milli(r.ts::DateTime64(3)) AS t, toString(r.context.page) AS page,
+            toString(r.context.device) AS device, toString(r.context.region) AS region,
+            toString(r.is_new_user) AS nu, r.recent_views AS recent_views, f.shown::Array(String) AS shown,
+            ifNull(toString(f.purchased), '') AS buy, toString(f.model_version) AS mv
+            FROM {rt.team}.feedback AS f INNER JOIN shop.requests AS r ON r.request_id::String = f.request_id::String
+            WHERE cityHash64(f.request_id::String) % {parts} = {k} AND f.request_id::String != '__init__'""", 600)
+    for r in fb:
+        r["t"] = int(r["t"])
+    events: list[tuple] = []
+    parts = 24
+    for k in range(parts):
+        for x in rt.query(f"""SELECT user_id::String AS u, groupArray(product_id::String) AS p,
+                groupArray(event_type::String) AS e, groupArray(toUnixTimestamp64Milli(ts::DateTime64(3))) AS t
+                FROM shop.events WHERE cityHash64(user_id::String) % {parts} = {k} GROUP BY u""", 600):
+            u = x["u"]
+            events.extend((int(t), u, p, e) for t, p, e in zip(x["t"], x["p"], x["e"]))
+    events.sort(key=lambda x: x[0])
+    cat = rt.query(SQL_CATALOG_UPDATES.format(since="1970-01-01 00:00:00.000", limit=500000), 300)
+    return fb, events, cat
+
+
+def replay_feedback(P: dict, cfg: Config, fb: list[dict], events: list[tuple], cat: list[dict],
+                    tilts: list[dict] | None = None, policy_last: int = 0) -> dict:
+    """Reproduce el stream en orden cronológico (eventos de usuario, compras del carrusel, stock y precios) y,
+    para cada producto de cada lista mostrada, guarda las piezas del modelo de compra: posición, si se compró,
+    clase de afinidad y probabilidad jerárquica en ese instante (con el mismo código que responde en vivo).
+    Con `tilts`, además, las listas que elegiría answer() con cada juego de multiplicadores en las últimas
+    `policy_last` peticiones, para predecir su conversión."""
+    import heapq
+    st = State(P, cfg)
+    for r in cat:                                          # los productos nuevos existen, sin stock hasta su alta
+        if r["change"] == "new_product" and r["product_id"] not in st.index:
+            i = st.add_product(r, parse_ts(r["ts"]) or 0.0)
+            if i is not None:
+                st.unavailable[i] = True
+    index = st.index
+    variants = tilts or [{}]
+    snaps: list[Snapshot] = []
+
+    def publish() -> None:
+        S0 = st.publish(set_global=False)
+        base = {k: getattr(S0, k) for k in Snapshot.__slots__}
+        snaps[:] = [Snapshot(**{**base, "prm": State.make_params(P["params"], cfg, **tl)}) for tl in variants]
+
+    publish()
+    order = sorted(range(len(fb)), key=lambda k: fb[k]["t"])
+    first_policy = len(order) - policy_last if tilts else len(order)
+    rank = {k: n for n, k in enumerate(order)}
+    stream = heapq.merge(
+        ((int((parse_ts(r["ts"]) or 0.0) * 1000), 0, k) for k, r in enumerate(cat)),
+        ((e[0], 1, k) for k, e in enumerate(events)),
+        ((fb[k]["t"], 2, k) for k in order),
+        sorted((fb[k]["t"] + 5000, 3, k) for k in order if fb[k]["buy"]))
+    M = sum(len((r["shown"] or [])[:10]) for r in fb)
+    X = np.zeros((M, 9))                                   # slot, compra, nuevo, home, LC, HC, V0, V1, ya comprado
+    PN = np.zeros(M)
+    AF = np.zeros((M, 2 * N_BASKETS), np.float32)          # puntuaciones de gustos de cada producto mostrado
+    n_pol = max(len(order) - first_policy, 0)
+    pol = np.zeros((n_pol, len(variants), 10, 5 + 2 * N_BASKETS), np.float32)   # lp, LC, HC, V0, V1, gustos
+    pol_ctx = np.zeros((n_pol, 3))                         # nuevo, home, compró (con la lista real)
+    rng = np.random.default_rng(0)
+    m, dirty = 0, False
+    for t, typ, k in stream:
+        if typ == 1:
+            _, u, p, e = events[k]
+            i = index.get(p)
+            if i is not None:
+                st.user_event(u, i, e)
+        elif typ == 0:
+            r = cat[k]
+            i = index.get(r["product_id"])
+            if r["change"] == "new_product":
+                if i is not None:
+                    st.unavailable[i] = st.price[i] <= 0
+                    st.T_launch[i], st.launch_ts[i] = st.T_live, t / 1000
+            else:
+                st.apply_update(r, t / 1000)
+            dirty = True
+        elif typ == 3:
+            st.user_event(fb[k]["user_id"], index.get(fb[k]["buy"], -1), "purchase", organic=False)
+        else:
+            r = fb[k]
+            if dirty:
+                publish()
+                dirty = False
+            u = r["user_id"]
+            bs, lcs, hcs = st.bought.get(u) or (), st.carted_live.get(u) or (), st.carted.get(u) or ()
+            nuevo, home = float(r["nu"] == "true"), float(r["page"] == "home")
+            n_k = rank[k] - first_policy
+            info: dict = {}
+            for v, S in enumerate(snaps if n_k >= 0 else snaps[:1]):
+                info = {}
+                answer(S, r, rng, info)
+                if n_k >= 0:
+                    Pn_, lc_, hc_, vs_ = info["Pn"], set(info["lc"]), set(info["hc"]), info["views"]
+                    for j, i in enumerate(info["chosen"][:10]):
+                        pol[n_k, v, j, :5] = (math.log(max(float(Pn_[i]), 1e-12) / P_REF), i in lc_, i in hc_,
+                                              bool(vs_) and i == vs_[-1], i in vs_[:-1])
+                        pol[n_k, v, j, 5:] = info["taste"][:, i]
+            if n_k >= 0:
+                pol_ctx[n_k] = (nuevo, home, float(bool(r["buy"])))
+            Pn, vs, ts_ = info["Pn"], info["views"], info["taste"]
+            for j, pid in enumerate((r["shown"] or [])[:10]):
+                i = index.get(pid, -1)
+                b = float(i in bs)
+                X[m] = (j, float(pid == r["buy"]), nuevo, home, float(i in lcs) * (1 - b),
+                        float(i in hcs and i not in lcs) * (1 - b), float(bool(vs) and i == vs[-1]) * (1 - b),
+                        float(i in vs[:-1]) * (1 - b), b)
+                if 0 <= i < Pn.size:
+                    PN[m] = float(Pn[i])
+                    AF[m] = ts_[:, i]
+                m += 1
+    return dict(X=X[:m], PN=PN[:m], AF=AF[:m], pol=pol, pol_ctx=pol_ctx)
+
+
+def glm_design(X: np.ndarray, PN: np.ndarray, AF: np.ndarray) -> np.ndarray:
+    ok = PN > 0
+    lp = np.where(ok, np.log(np.maximum(PN, 1e-12) / P_REF), 0.0)
+    nop = (~ok & (X[:, 8] == 0)).astype(float)             # fuera de catálogo o sin stock según nuestro estado
+    return np.column_stack([np.ones(len(X)), X[:, 2], X[:, 3], lp, X[:, 4], X[:, 5], X[:, 6], X[:, 7], X[:, 8],
+                            X[:, 4] * lp, nop, AF.astype(np.float64)])
+
+
+def poisson_fit(A: np.ndarray, y: np.ndarray, off: np.ndarray, l2: float = 1e-4):
+    """Regresión de Poisson con enlace log (Newton amortiguado). Devuelve coeficientes, errores estándar y logver."""
+    b = np.zeros(A.shape[1])
+    b[0] = math.log(max(float(y.sum()), 1.0) / float(np.exp(off).sum()))
+    H = np.eye(len(b))
+    for _ in range(300):
+        mu = np.exp(np.clip(A @ b + off, -50, 20))
+        g = A.T @ (y - mu) - l2 * b
+        H = (A * mu[:, None]).T @ A + l2 * np.eye(len(b))
+        step = np.linalg.solve(H, g)
+        mx = float(np.abs(step).max())
+        b = b + (step / mx if mx > 1 else step)
+        if mx < 1e-8:
+            break
+    mu = np.exp(np.clip(A @ b + off, -50, 20))
+    return b, np.sqrt(np.diag(np.linalg.inv(H))), float((y * np.log(mu) - mu).sum())
+
+
+def calibrate_live(rt: RawTree, cfg: Config, policy_last: int = 30000, args_dry: bool = False) -> None:
+    """Reestima los multiplicadores de afinidad usuario-producto con todo nuestro feedback:
+        compra_ij ~ Poisson( w_slot · exp(a + a_nuevo + a_home) · P_j^theta · exp(g_clase) · (P_j/p_ref)^(-d_lc·LC) )
+    con P_j la probabilidad jerárquica del producto en el instante de la petición. Guarda los parámetros en la
+    caché del modelo (hay que reiniciar el proceso en vivo para que los cargue)."""
+    path = CACHE / "priors_live.pkl"
+    if not path.exists():
+        sys.exit("No hay modelo en caché: ejecuta antes --build")
+    P = pickle.loads(path.read_bytes())
+    load_affinity(rt, P, cfg)
+    cfg.thompson = False
+    t0 = time.time()
+    fb, events, cat = download_feedback(rt)
+    log.info("[calib] %d listas (%d compras), %d eventos del stream, %d cambios de catálogo · %.0f s", len(fb),
+             sum(1 for r in fb if r["buy"]), len(events), len(cat), time.time() - t0)
+    old = {k: float(P["params"].get(k, TILT_DEFAULT[k])) for k in TILT_DEFAULT}
+    old["taste"] = [float(v) for v in (P["params"].get("taste") or [0.0] * (2 * N_BASKETS))]
+    R = replay_feedback(P, cfg, fb, events, cat)
+    X, PN = R["X"], R["PN"]
+    w = np.asarray(P["w_pos"])[X[:, 0].astype(int)]
+    y = X[:, 1]
+    A = glm_design(X, PN, R["AF"])
+    use_taste = cfg.taste and AFF is not None and y.sum() >= 300
+    if not use_taste:
+        A = A[:, :N_BASE]
+    b, se, ll = poisson_fit(A, y, np.log(w))
+    _, _, ll0 = poisson_fit(A[:, [0, 1, 2, 3, 8, 10]], y, np.log(w))
+    _, _, ll1 = poisson_fit(A[:, :N_BASE], y, np.log(w))
+    log.info("[calib] regresión de Poisson · %d impresiones, %d compras · logver %.1f (solo jerárquica: %.1f · "
+             "+ carrito y vistos: %.1f) · %.0f s", len(y), int(y.sum()), ll, ll0, ll1, time.time() - t0)
+    for name, bi, si in zip(GLM_COLS, b, se):
+        log.info("[calib]   %-14s %+.3f ± %.3f   (x%.2f)", name, bi, si, math.exp(min(bi, 20)))
+    buys = dict(theta=int(y.sum()), g_lc=int(y[X[:, 4] > 0].sum()), g_hc=int(y[X[:, 5] > 0].sum()),
+                g_v0=int(y[X[:, 6] > 0].sum()), g_v1=int(y[X[:, 7] > 0].sum()))
+    buys["d_lc"] = buys["g_lc"]
+    est = dict(theta=b[3], g_lc=b[4], d_lc=-b[9], g_hc=b[5], g_v0=b[6], g_v1=b[7])
+    new = dict(old)
+    for k, v in est.items():
+        if buys[k] >= TILT_MIN_BUYS[k] and math.isfinite(v):
+            lo, hi = TILT_BOUNDS[k]
+            new[k] = round(float(min(max(v, lo), hi)), 3)
+        else:
+            log.warning("[calib] %s: solo %d compras; se mantiene %.3f", k, buys[k], old[k])
+    log.info("[calib] compras por clase: carrito de hoy %d · carrito antiguo %d · último visto %d · visto antes %d",
+             buys["g_lc"], buys["g_hc"], buys["g_v0"], buys["g_v1"])
+    if use_taste:
+        new["taste"] = [round(float(min(max(v, -0.5), 4.0)), 3) for v in b[N_BASE:N_BASE + 2 * N_BASKETS]]
+    log.info("[calib] antes: %s", old)
+    log.info("[calib] ahora: %s", new)
+    # conversión prevista de la lista que elegiría el modelo, con los multiplicadores de antes y los de ahora
+    zero = dict(theta=1.0, g_lc=0.0, d_lc=0.0, g_hc=0.0, g_v0=0.0, g_v1=0.0, taste=[0.0] * (2 * N_BASKETS))
+    R2 = replay_feedback(P, cfg, fb, events, cat, tilts=[zero, old, new], policy_last=min(policy_last, len(fb)))
+    pol, ctx = R2["pol"], R2["pol_ctx"]
+    lin = (b[0] + b[1] * ctx[:, 0] + b[2] * ctx[:, 1])[:, None, None] + b[3] * pol[..., 0] + b[4] * pol[..., 1] \
+        + b[5] * pol[..., 2] + b[6] * pol[..., 3] + b[7] * pol[..., 4] + b[9] * pol[..., 1] * pol[..., 0]
+    if use_taste:
+        lin = lin + pol[..., 5:] @ b[N_BASE:N_BASE + 2 * N_BASKETS]
+    pred = (np.asarray(P["w_pos"])[None, None, :] * np.exp(np.clip(lin, -50, 5))).sum(-1)      # (peticiones, variantes)
+    comp = pol[..., 1:5].sum(2).mean(0)                    # productos de cada clase por lista
+    names = ("sin afinidad", "parámetros anteriores", "parámetros nuevos")
+    diag = {"n_listas": len(fb), "n_compras": int(y.sum()), "logver": ll, "logver_solo_jerarquica": ll0,
+            "logver_con_carrito_y_vistos": ll1,
+            "coef": {n: [float(bi), float(si)] for n, bi, si in zip(GLM_COLS, b, se)}, "compras_por_clase": buys,
+            "antes": old, "ahora": new, "calibrado": fmt_ts(time.time()), "prevision": {}}
+    log.info("[calib] últimas %d peticiones: conversión real %.2f %% (con las listas que se mostraron)",
+             len(ctx), 100 * ctx[:, 2].mean())
+    for v, name in enumerate(names):
+        nu = ctx[:, 0] > 0
+        diag["prevision"][name] = {"todas": float(100 * pred[:, v].mean()), "nuevos": float(100 * pred[nu, v].mean()),
+                                   "con_historia": float(100 * pred[~nu, v].mean())}
+        log.info("[calib]   %-22s conversión prevista %.2f %% (usuarios nuevos %.2f %% · con historia %.2f %%) · por "
+                 "lista: %.2f carrito de hoy, %.2f carrito antiguo, %.2f vistos", name, 100 * pred[:, v].mean(),
+                 100 * pred[nu, v].mean(), 100 * pred[~nu, v].mean(), comp[v, 0], comp[v, 1], comp[v, 2] + comp[v, 3])
+    log.info("[calib] (la previsión extrapola el modelo de compra a listas que no se han mostrado: orienta, "
+             "no sustituye a la prueba en vivo)")
+    if args_dry:
+        log.info("[calib] --dry-run: no se guarda nada")
+        return
+    P["params"].update(new)
+    P["diag"]["afinidad"] = diag
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(pickle.dumps(P, protocol=pickle.HIGHEST_PROTOCOL))
+    tmp.replace(path)
+    (CACHE / "priors_live_params.json").write_text(
+        json.dumps({"params": P["params"], "diag": P["diag"], "w_pos": P["w_pos"].tolist()}, indent=1,
+                   ensure_ascii=False, default=str))
+    log.info("[calib] parámetros guardados en %s · %.0f s en total · reinicia el proceso en vivo para cargarlos",
+             path.name, time.time() - t0)
 
 
 # =============================================================================
@@ -1801,9 +2280,11 @@ def run_eval(args) -> None:
 # 9. CLI
 # =============================================================================
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Recomendador tengo-aurilla-v0 (jerárquico factorizado)")
+    ap = argparse.ArgumentParser(description="Recomendador tengo-aurilla (jerárquico factorizado + afinidad usuario-producto)")
     ap.add_argument("--build", action="store_true", help="estima el modelo, lo guarda y sale")
     ap.add_argument("--rebuild", action="store_true", help="ignora la caché del modelo")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="reestima la afinidad usuario-producto con nuestro feedback en vivo y sale")
     ap.add_argument("--eval", metavar="N", help="evaluación offline con N impresiones del holdout")
     ap.add_argument("--smoke", action="store_true", help="responde 30 peticiones reales sin enviarlas")
     ap.add_argument("--dry-run", action="store_true", help="todo el sistema, sin escribir en RawTree")
@@ -1829,6 +2310,8 @@ def main() -> None:
             sys.exit("--shard K/N: hace falta 0 <= K < N")
     if args.eval:
         run_eval(args)
+    elif args.calibrate:
+        calibrate_live(make_rt(), CFG, args_dry=args.dry_run)
     elif args.build:
         P = load_or_build(make_rt(), CFG, None, True)
         log_params(P)
