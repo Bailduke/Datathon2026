@@ -1,0 +1,4279 @@
+================================================================================
+RAWTREE CHALLENGE · REAL-TIME RECOMMENDATION — DATATHON FME 2026
+SISTEMA DE RECOMANACIÓ BAYESIÀ EN TEMPS REAL — ESPECIFICACIÓ v3 "Bayes-TS"
+================================================================================
+
+Fitxer:              model.txt
+Àmbit:               matemàtica + arquitectura + algorítmia + SQL + operació
+Implementació base:  starter/recommender.py (Python 3.9+, numpy, pandas, requests)
+Objectiu:            especificació prou concreta per implementar-la directament.
+
+--------------------------------------------------------------------------------
+RESUM EXECUTIU
+--------------------------------------------------------------------------------
+El sistema és un re-ranking bayesià en streaming amb tres peces:
+
+  (A) PRIORS OFFLINE. Un model jeràrquic Beta-Binomial per producte
+      (Categoria -> Subcategoria -> Producte), estimat amb Inverse Propensity
+      Scoring (IPS) sobre shop.history_sessions i fusionat amb senyals orgànics
+      de shop.history_events. Inclou:
+        - matriu de transició/co-ocurrència P(i|j) amb suavitzat Dirichlet i
+          priors estructurals (subcategoria, marca, similitud de descripció);
+        - regressió logística bayesiana contextual amb aproximació de Laplace;
+        - biaix de posició w_k per als 10 slots del carrusel.
+
+  (B) INFERÈNCIA EN TEMPS REAL (< 500 ms). Per a cada petició:
+      filtratge dur d'estoc -> generació de 80-100 candidats (transicions,
+      contingut, tendències, priors, exploració) -> Thompson Sampling contextual
+      -> funció d'utilitat que combina probabilitat de compra amb preu ->
+      ordenació amb diversitat i quotes -> validació estricta dels 10 IDs.
+
+  (C) BUCLE ASÍNCRON. Un worker de feedback (cada 1-2 s) actualitza els
+      posteriors amb correcció de biaix de posició; un worker d'esdeveniments
+      (cada 10 s) detecta tendències; un worker de catàleg (cada 0.5-1 s)
+      aplica new_product / price_change / out_of_stock / back_in_stock; un
+      worker de persistència (cada 60 s) desa l'estat a team_NN.scratch.
+
+Per què guanya punts:
+  - Conversion (50 pts): el rànquing és per probabilitat de compra (no per
+    popularitat), amb correcció IPS del biaix del sistema antic, context i
+    preu; l'ordre dels slots maximitza la suma w_k * p_k.
+  - Cold start (10 pts): els productes nous s'inicialitzen amb el posterior de
+    la seva subcategoria/marca + kNN de descripció + incertesa alta, i les
+    peticions fredes tenen una política específica de contingut.
+  - Reliability (10 pts): validació abans d'enviar, marge de 3 s, lots de
+    màxim ~0.4 s, circuit breaker i llista de seguretat en estoc.
+  - Tie-breaker (revenue): la utilitat inclou un terme de preu calibrat per
+    desempatar sense sacrificar conversió.
+
+Els 70 punts automàtics es normalitzen entre el baseline (0) i l'oracle (100)
+amb score = 100 * (team - baseline) / (oracle - baseline), clip [0,100].
+Els altres 30 punts són del jurat (mètode, aprenentatge del stream, ús de
+RawTree i comunicació); per això el document inclou validació, SQL i
+explicacions de per què cada peça és com és.
+
+Restriccions dures que governen tot el disseny:
+  - 10 IDs DIFERENTS i ACTIUS, escrits a team_NN.submissions en <= 3.000 ms
+    des del ts de la petició (mesurat pel rellotge de l'organització; el
+    stream és UTC i la finestra final és 10:00-12:00 CET = 09:00-11:00 UTC).
+  - Si l'answer arriba tard o és invàlida, s'aplica el fallback (best sellers
+    en estoc): penalitza Conversion, Cold start i Reliability alhora.
+  - El sistema ha de funcionar desatès, també durant el canvi de règim de
+    diumenge (dades inèdites, nous compradors, nous productes, noves
+    tendències).
+
+--------------------------------------------------------------------------------
+ÍNDEX
+--------------------------------------------------------------------------------
+  1. VISIÓ GENERAL DE L'ARQUITECTURA (2 FASES + BUCLE ASÍNCRON)
+  2. CONSTRUCCIÓ MATEMÀTICA DEL MODEL A PRIORI (OFFLINE)
+     2.1 Notació i objectiu estadístic
+     2.2 Inverse Propensity Scoring (IPS) i comptes efectius
+     2.3 Prior jeràrquic Beta-Binomial per producte
+     2.4 Fusió dels senyals orgànics
+     2.5 Prior de transició / co-ocurrència P(i|j)
+     2.6 Prior contextual: logística bayesiana + Laplace
+     2.7 Prior de biaix de posició w_k
+     2.8 Calibratge global i temperatura
+  3. INFERÈNCIA EN TEMPS REAL I FUNCIÓ DE PUNTUACIÓ
+     3.1 Contracte de la petició i parsing defensiu
+     3.2 Filtratge estricte d'estoc actiu
+     3.3 Generació de candidats
+     3.4 Thompson Sampling contextual
+     3.5 Utilitat: conversió + ingressos
+     3.6 Ordenació, diversitat i quotes
+     3.7 Política de peticions fredes
+     3.8 Pseudocodi complet de answer()
+  4. ACTUALITZACIÓ ONLINE DEL POSTERIOR
+     4.1 Ingesta de team_NN.feedback
+     4.2 Actualització amb biaix de posició
+     4.3 Actualització contextual (ADF / Sherman-Morrison)
+     4.4 Compra repetida i estat d'usuari
+     4.5 Tendències amb shop.events
+     4.6 Gestió de shop.catalog_updates i cold start
+     4.7 Adaptació al canvi de domini (diumenge 09:00 UTC)
+     4.8 Guardrails de fiabilitat i circuit breaker
+  5. EMMAGATZEMATGE A team_NN.scratch I CONSULTES SQL CLAU
+     5.1 Esquema JSON de l'estat
+     5.2 Protocol d'escriptura/lectura i compactació
+     5.3 SQL: catàleg actual
+     5.4 SQL: IPS i jerarquia
+     5.5 SQL: senyals orgànics
+     5.6 SQL: co-ocurrència
+     5.7 SQL: tendències i streaming
+     5.8 SQL: feedback, fiabilitat i reconciliació
+     5.9 HTTP: query i insert
+  6. IMPLEMENTACIÓ SOBRE starter/recommender.py
+     6.1 Mapa de mòduls
+     6.2 Estructures i signatures
+     6.3 Esquelet del bucle principal
+     6.4 Configuració per defecte
+     6.5 Tests i validació
+  7. AVALUACIÓ OFFLINE I VALIDACIÓ
+  8. RUNBOOK DEL DIUMENGE (CANVI DE RÈGIM)
+  9. RISCOS, FALLBACKS I PLA B
+ 10. CHECKLIST D'IMPLEMENTACIÓ
+ APÈNDIX A. Taula de símbols
+ APÈNDIX B. Hiperparàmetres per defecte
+ APÈNDIX C. Resum de fórmules
+
+================================================================================
+1. VISIÓ GENERAL DE L'ARQUITECTURA (2 FASES + BUCLE ASÍNCRON)
+================================================================================
+
+1.1 CONTRACTE OPERATIU
+-----------------------
+Entrada:  shop.requests (append-only, ~3 peticions/s, 24 h/dia).
+          Camps: request_id, ts, user_id, is_new_user, context{device, region,
+          page}, recent_views[{product_id, ts}].
+Sortida:  team_NN.submissions, un registre per petició:
+          {"request_id": ..., "items": [10 IDs], "model_version": "..."}
+          Exactament 10 IDs diferents, existents i actius, en <= 3.000 ms.
+Feedback: team_NN.feedback (privat), uns segons després, amb shown,
+          served_by ∈ {team, fallback}, fallback_reason ∈ {missing, late,
+          invalid}, latency_ms, clicked, purchased, revenue_eur. Ignorar
+          request_id == "__init__".
+Avaluació: conversion (50), cold start (10), reliability (10), tie-breaker
+          revenue_eur/petició. L'ordre importa: w_1 >> w_10.
+
+La regla d'or: MAI sacrificar validesa o puntualitat per una millor
+recomanació. Una answer invàlida val 0 i a més contamina el feedback.
+
+1.2 LES DUES FASES I EL BUCLE
+-----------------------------
+FASE A — OFFLINE (T-24 h a T-15 min; mai dins del camí de la petició)
+  A1. Snapshot de catàleg (shop.catalog + últim update per producte).
+  A2. Agregats IPS de shop.history_sessions (60 dies) per producte i slot.
+  A3. Agregats orgànics de shop.history_events (60 dies) amb decaïment.
+  A4. Co-ocurrència / transicions + priors estructurals + embeddings de text.
+  A5. Regressió logística bayesiana contextual (Laplace) amb validació temporal.
+  A6. Biaix de posició w_k per EM + regressió isotònica.
+  A7. Calibratge global (intercept + temperatura) sobre els últims 7 dies.
+  A8. Escriptura a team_NN.scratch i còpia local .npz (arrencada ràpida).
+
+FASE B — INFERÈNCIA ONLINE (< 500 ms, dins del bucle de peticions)
+  B1. Pull de shop.requests (finestra de 60 s, dedupe per request_id).
+  B2. Filtratge dur (actiu, no out_of_stock, no comprat per l'usuari).
+  B3. Generació de 80-100 candidats.
+  B4. Thompson Sampling contextual + utilitat (compra i preu).
+  B5. Ordenació amb diversitat, quotes i slots d'exploració.
+  B6. Validació final i push en lot a team_NN.submissions.
+
+BUCLE ASÍNCRON (workers independents, cap al camí crític)
+  W1. feedback_loop   cada 1.0-2.0 s: llegeix feedback nou, actualitza
+      posteriors de clic/compra, model contextual, compres repetides.
+  W2. events_loop     cada 10 s: llegeix shop.events nou, actualitza
+      comptadors de tendència (finestres de 15 i 180 min).
+  W3. catalog_loop    cada 0.5-1.0 s: llegeix shop.catalog_updates nou,
+      aplica estoc, preus i productes nous; publica un snapshot nou.
+  W4. persist_loop    cada 60 s: checkpoint incremental a scratch.
+  W5. health_loop     cada 10 s: latència, fallback rate, taxes de conversió,
+      detecció de canvi de règim (CUSUM).
+
+1.3 DIAGRAMA
+------------
+                       +-------------------------------+
+   shop.requests  ---> |  request_loop (0.25 s)        |
+   (3/s)               |  pull -> dedupe -> answer()   |
+                       |  -> validate -> batch push    |
+                       +---------------+---------------+
+                                       |
+                                       v
+                       +-------------------------------+
+                       |  Snapshot immutable (RAM)     |
+                       |  arrays numpy + CSR + dicts   |
+                       +-------------------------------+
+                          ^          ^          ^
+                          |          |          |
+        +-----------------+   +------+------+   +------------------+
+        | feedback_loop   |   | events_loop |   | catalog_loop     |
+        | 1-2 s           |   | 10 s        |   | 0.5-1 s          |
+        +--------+--------+   +------+------+   +--------+---------+
+                 |                   |                   |
+        team_NN.feedback      shop.events      shop.catalog_updates
+                 |                   |                   |
+                 +-------------------+-------------------+
+                                     |
+                             persist_loop -> team_NN.scratch
+
+1.4 ESTAT EN MEMÒRIA (Snapshot)
+-------------------------------
+Cada snapshot és un objecte immutable (les arrays no es modifiquen després de
+publicar-lo). Els workers construeixen l'estat nou i el publiquen amb una sola
+assignació de referència (atòmica sota el GIL de CPython). Així el camí de
+inferència no agafa mai un lock llarg ni veu estats a mitges.
+
+  Snapshot:
+    ids            list[str]            N ≈ 5.000 (índex 0..N-1 -> product_id)
+    index          dict[str,int]        product_id -> índex
+    category       np.ndarray[int16]    codi 0..9
+    subcategory    np.ndarray[int16]    codi 0..89
+    brand          np.ndarray[int16]    codi de marca
+    price          np.ndarray[float32]
+    active         np.ndarray[bool]
+    is_new         np.ndarray[bool]     new_product vist a l'esdeveniment
+    unavailable    np.ndarray[bool]     out_of_stock actual (tombstone)
+    alpha0,beta0   np.ndarray[float32]  prior jeràrquic (offline)
+    alpha,beta     np.ndarray[float32]  posterior final (14), recalculat en publicar
+    s_slow,f_slow  np.ndarray[float32]  evidència acumulada, half-life 7 dies
+    s_fast,f_fast  np.ndarray[float32]  evidència acumulada, half-life 20 min
+    s_click,f_click np.ndarray[float32]
+    E              np.ndarray[float32]  (N x D) embeddings hashed TF-IDF
+    trans_indptr, trans_indices, trans_data  CSR top-200 per producte
+    mu_beta        np.ndarray[float32]  (d)
+    Sigma_beta     np.ndarray[float32]  (d x d)
+    calib_a,calib_T float
+    w              np.ndarray[float32]  (10) biaix de posició, w[0]=1
+    trend_boost    np.ndarray[float32]  boost bayesià de tendència
+    new_bonus, restock_bonus, price_bonus  np.ndarray[float32]
+    p95_price      float
+    feature_mean, feature_std  np.ndarray[float32]
+    best_safe      list[int]            fallback intern en estoc
+    new_product_set frozenset[str]      IDs amb change == 'new_product'
+    live_atc       dict[str,set[int]]   add_to_cart en viu per usuari (TTL 30 min)
+    user_bought    LRU[user_id -> set[int]]  (TTL 30 dies)
+    user_clicked   LRU[user_id -> set[int]]  (TTL 1 h)
+    user_affinity  LRU[user_id -> np.ndarray] (10)  opcional, feature 29
+    submitted      LRU[request_id -> ts]     (TTL 15 min)
+
+Cost de memòria amb N=5.000, D=512, top-200:
+  catàleg + comptes:            ~2 MB
+  embeddings float32:          5.000*512*4 = 10,2 MB
+  transicions CSR:             1.000.000*(4+4) ≈ 8 MB
+  ring de tendències:          5.000*240*4*3 ≈ 14 MB
+  total < 110 MB. Qualsevol portàtil pot executar-ho.
+
+1.5 PRESSUPOST DE LATÈNCIA (objectiu p99 < 500 ms des del pull)
+---------------------------------------------------------------
+  Etapa                                   p50      p99
+  POST /v1/query (requests, 60 s)          40 ms    150 ms
+  parsing + dedupe + filtratge              3 ms      8 ms
+  generació de candidats (100)             12 ms     30 ms
+  scoring + Thompson (100 candidats)        6 ms     15 ms
+  ordenació + validació                     2 ms      5 ms
+  POST /v1/tables/submissions (lot)        40 ms    120 ms
+  ------------------------------------------------
+  TOTAL des del pull                      103 ms    328 ms
+  Marge respecte als 3.000 ms              ~2,7 s
+
+Regles de latència:
+  - Cap consulta pesada dins del request_loop. Els priors es calculen offline.
+  - Les consultes de streaming són petites i amb finestra temporal.
+  - Si una petició té més de 2.600 ms d'edat en el moment del push, s'envia
+    igualment (potser arriba a temps); si en té més de 2.900 ms, es descarta
+    per no malgastar el lot. Mai bloquejar el loop per una petició vella.
+  - Timeout HTTP: query 10 s, insert 5 s. Un timeout no atura el bucle:
+    s'usa l'últim snapshot conegut.
+
+1.6 CALENDARI I CANVI DE RÈGIM
+------------------------------
+  Dissabte 10:00 CET: s'obre el stream. Fins llavors shop.requests,
+    shop.events i shop.catalog_updates són buides i les consultes fallen amb
+    "Unknown expression identifier": el bucle reintenta sense trencar-se.
+  Dissabte 10:00 -> Diumenge 10:00 CET: pràctica, leaderboard públic.
+  Diumenge 09:00 UTC (= 10:00 CET): canvi de règim. El model activa
+    decaïment ràpid, reinjecció de variància, més exploració i blend de
+    transicions vives. És automàtic (flag per rellotge) i també detectable
+    per CUSUM.
+  Diumenge 11:00 UTC (= 12:00 CET): stop. No cal fer res; el sistema és la
+    submissió. Cal deixar el procés viu i el portàtil despert.
+
+================================================================================
+2. CONSTRUCCIÓ MATEMÀTICA DEL MODEL A PRIORI (OFFLINE)
+================================================================================
+
+2.1 NOTACIÓ I OBJECTIU ESTADÍSTIC
+---------------------------------
+  I = {1..N}              productes, N ≈ 5.000
+  t                       petició / impressió del carrusel
+  u(t)                    usuari de la petició
+  c(i), s(i), b(i)        categoria (10), subcategoria (90), marca
+  m_t                     nombre de recent_views (≤ ~10)
+  k ∈ {1..10}             slot del carrusel
+  S_t = (i_{t,1},...,i_{t,10})  slate mostrat pel sistema antic
+  e_{t,i,k}               propensity: P_0(mostrar i al slot k | prefix del slate)
+  w_k                     probabilitat que l'usuari examini el slot k; w_1 = 1
+  y^C_t ∈ I ∪ {⊥}        producte clicat (⊥ = cap)
+  y^P_t ∈ I ∪ {⊥}        producte comprat (⊥ = cap)
+  r_t = revenue_eur       ingressos realitzats de la petició
+  α_i, β_i                pseudo-comptes Beta de COMPRA (posterior)
+  α^C_i, β^C_i            pseudo-comptes Beta de CLIC (diagnòstic i exploració)
+  μ_i = α_i/(α_i+β_i)     probabilitat de compra marginal estimada
+  z_{t,i} ∈ R^d           features contextuals de (petició, producte), d ≤ 32
+  β ∈ R^d                 coeficients de la logística bayesiana
+  μ_β, Σ_β                posterior Laplace: mitjana i covariància
+  T_{ji} = P(i|j)         transició / co-ocurrència Dirichlet
+  τ_{t,i}                 score de transició de la sessió t cap a i
+  b^{tr}_i(t)             boost de tendència en l'instant t
+  p_{t,i}                 probabilitat de compra de i si es mostra a t
+  U_{t,i}                 utilitat esperada (compra + preu)
+  γ                       factor de decaïment temporal (per unitat de temps)
+
+Objectiu estadístic: estimar, per a cada producte i i context t, la
+probabilitat que el comprador compri i si el mostrem. El que volem optimitzar
+no és el CTR sinó les compres esperades per 100 peticions:
+
+  E[compres | política π] = (100/T) Σ_t Σ_k w_k p_{t, i_{t,k}}
+
+perquè un producte al slot k només es pot comprar si l'usuari l'examina
+(probabilitat w_k) i decideix comprar-lo (probabilitat p). Aquesta descomposició
+justifica que l'ordre del carrusel sigui part de l'optimització, no un detall.
+
+Hipòtesis de treball:
+  H1. Ignorabilitat: e_{t,i,k} > 0 per a tot producte i slot amb probabilitat
+      positiva; el log antic va randomitzar prou (best sellers + soroll).
+  H2. Consistència: el resultat observat només depèn del producte mostrat i del
+      context, no de com l'hem triat.
+  H3. Un usuari compra com a màxim un producte per petició (el simulador
+      registra un sol `purchased`). Les compres esperades d'un slate són,
+      per tant, la suma de les probabilitats marginals.
+  H4. El biaix de posició actua com a probabilitat d'examinar: P(clic) =
+      w_k * rel(i, t). És el model d'examen estàndard i és identificable amb
+      w_1 = 1.
+
+2.2 INVERSE PROPENSITY SCORING (IPS) I COMPTES EFECTIUS
+--------------------------------------------------------
+El log de shop.history_sessions està esbiaixat: el sistema antic mostrava els
+més venuts i, per tant, els productes populars tenen moltes més impressions i
+més compres observades. Si estiméssim θ_i = compres/impressions directament,
+reproduiríem el biaix i el model no descobriria productes bons poc mostrats.
+
+2.2.1 Estimador per producte i slot
+-----------------------------------
+Per a cada impressió (t, k) amb producte i = i_{t,k}, definim el pes de
+correcció de posició:
+
+  ω_{t,i,k} = 1 / ( max(e_{t,i,k}, e_min) * max(w_k, w_min) )        (1)
+
+  e_min = 0.01, w_min = 0.05, ω_max = 50
+  ω_{t,i,k} ← min(ω_{t,i,k}, ω_max)                                  (clipping)
+
+El clipping introdueix una mica de biaix a canvi de variància finita. Sense
+clipping, una sola impressió amb e = 1e-4 dominaria tota l'estimació.
+
+Comptes IPS (NO s'injecten directament a la Beta: primer es corregeix la
+inflació de variància que provoca el pes ω):
+
+  s_i^raw = Σ_{t,k} 1{i_{t,k} = i} * 1{y^P_t = i} * ω_{t,i,k}        (2)
+  f_i^raw = Σ_{t,k} 1{i_{t,k} = i} * (1 - 1{y^P_t = i}) * ω_{t,i,k}  (3)
+
+Mida efectiva de mostra:
+
+  ESS_i = (Σ_{t,k} 1{i_{t,k}=i} ω_{t,i,k})^2
+          / Σ_{t,k} (1{i_{t,k}=i} ω_{t,i,k})^2                       (4)
+  ESS_i ← min(ESS_i, ESS_max),  ESS_max = 5.000
+
+Mitjana SNIPS i comptes efectius:
+
+  θ̂_i = s_i^raw / (s_i^raw + f_i^raw)      si el denominador > 0
+  θ̂_i = m_{i,0} = α_{i,0}/(α_{i,0}+β_{i,0})  altrament
+  s_i^eff = ESS_i * θ̂_i
+  f_i^eff = ESS_i * (1 - θ̂_i)                                       (5)
+
+  α_i = α_{i,0} + s_i^eff,  β_i = β_{i,0} + f_i^eff
+
+Exemple que motivava la correcció: 10 impressions al slot 10 (w_10 = 0.08)
+amb e = 0.1 i 0 compres donen ω = 50 i f_i^raw = 500. La Beta amb 500
+fracassos seria ultra-estreta. Amb (4)-(5), ESS_i = 10 i f_i^eff = 10: la
+incertesa real es conserva i Thompson Sampling pot explorar.
+
+La forma (5) és la mitjana posterior Beta(α_{i,0}+s_i^eff, β_{i,0}+f_i^eff):
+el prior jeràrquic regularitza i evita divisions per zero. Els comptes efectius
+són els que s'usen a la jerarquia (2.3), a la inicialització (2.3.4) i a
+l'actualització online (4.2); mai els comptes crus.
+
+2.2.2 Mida efectiva de mostra
+-----------------------------
+  n_i = s_i^eff + f_i^eff = ESS_i                                     (4b)
+
+ESS_i mesura quantes impressions "netes" equival el conjunt ponderat:
+  - ESS_i ≥ 100: el prior pesa poc; el producte té evidència pròpia.
+  - 30 ≤ ESS_i < 100: shrinkage moderat.
+  - ESS_i < 30: el prior jeràrquic domina; s'explora via Thompson.
+  - ESS_i < 5: no es considera evidència suficient per trencar el prior.
+
+2.2.3 Per què no n'hi ha prou amb el CTR del slot 1
+---------------------------------------------------
+El CTR del slot 1 és més net (w_1 = 1, poques impressions però molt
+examinades), però té poquíssimes dades per producte i està dominat pels best
+sellers. L'usem com a diagnòstic i com a ancoratge de calibratge, no com a
+única font. L'estimador (2)-(5) aprofita tots els slots i corregeix tant la
+propensió com la posició, i evita la inflació de variància dels pesos IPS.
+
+2.2.4 Decaïment temporal
+------------------------
+L'històric té 60 dies, però el món canvia. Apliquem un pes exponencial per dia:
+
+  d(ts) = 0.5 ^ ((T_now - ts) / H_hist),  H_hist = 21 dies             (6)
+  γ_day = 0.5 ^ (1/21) = 0.9675...
+
+Els comptes (2)-(3) es guarden en buckets diaris ja decaïts, de manera que
+afegir un dia nou només requereix multiplicar els acumulats per γ_day i sumar
+el bucket nou. Cost O(N) per dia, negligible.
+
+2.2.5 Limitacions i controls
+----------------------------
+  - La propensity donada és CONDICIONAL al prefix del slate. L'estimador (2)
+    és vàlid per al target condicional; per al target marginal caldria la
+    probabilitat marginal d'aparèixer al slot k. Com que el sistema antic
+    construeix el slate de dalt a baix, la condicional és la informació
+    disponible i és la que fem servir. Documentar-ho a la presentació.
+  - Si el log té molts productes amb e < e_min, el clipping infravalora els
+    productes rars. Mitigació: combinar amb el prior jeràrquic i amb el senyal
+    orgànic (Secció 2.4), que no depèn de la política antiga.
+  - Validació: reportar sempre ESS mitjà i el nombre d'impressions reals al
+    costat de cada estimació IPS.
+
+2.3 PRIOR JERÀRQUIC BETA-BINOMIAL PER PRODUCTE
+----------------------------------------------
+Volem un prior α_{i,0}, β_{i,0} que:
+  (a) comparteixi informació entre productes semblants (subcategoria, marca),
+  (b) es deixi dominar per les dades quan n'hi ha moltes (shrinkage correcte),
+  (c) sigui barat de recalcular i fàcil d'actualitzar en streaming.
+
+2.3.1 Nivells i paràmetres
+--------------------------
+Nivell 0 (global):      θ ~ Beta(A_G, B_G)
+Nivell 1 (categoria):   θ_c | θ ~ Beta(α_c, β_c),  c = 1..10
+Nivell 2 (subcategoria):θ_s | θ_c ~ Beta(α_s, β_s), s = 1..90
+Nivell 3 (producte):    θ_i | θ_s ~ Beta(α_{i,0}, β_{i,0})
+
+La mitjana posterior de cada nivell és m = α/(α+β); la força és n = α+β.
+
+2.3.2 Estimació empírica per moments
+------------------------------------
+Per a un grup g (global, categoria o subcategoria) amb productes i i pesos
+n_i = s_i + f_i (els comptes IPS de la Secció 2.2), calculem:
+
+  m_g = Σ_i n_i θ̂_i / Σ_i n_i                                       (7)
+  v_g = Σ_i n_i (θ̂_i - m_g)^2 / Σ_i n_i                             (8)
+
+Si v_g > 0, els paràmetres Beta que igualen mitjana i variància són:
+
+  ν_g = m_g (1 - m_g) / v_g - 1                                      (9)
+  α_g = m_g ν_g,   β_g = (1 - m_g) ν_g                               (10)
+
+Restriccions numèriques:
+  ν_g ← clip(ν_g, 0.5, 500)
+  α_g, β_g ← max(α_g, 0.05), max(β_g, 0.05)
+  m_g ← clip(m_g, 0.001, 0.25)   (cap producte té >25% de compra per impressió)
+
+Aquesta estimació és empirical Bayes: no calen hiperpriors ni MCMC. Si un grup
+té poca variància (v_g ≈ 0), ν_g explota; el clip el limita. Si el grup té
+menys de 2 productes, v_g no és estimable: ν_g = 0 i el grup hereta
+directament el pare. És una aproximació de la posterior jeràrquica, no la
+posterior exacta d'un model complet; per a l'objectiu de rànquing és suficient
+i molt més barata.
+
+2.3.3 Propagació jeràrquica amb shrinkage per precisió
+------------------------------------------------------
+Per a cada grup g calculem (m_g, v_g, ν_g, α_g, β_g) amb (7)-(10). La força
+ν_g surt de la VARIÀNCIA entre productes del grup, no del volum de trànsit.
+Si ν_g = 0 (grup amb <2 productes o sense variància), aquell nivell no aporta
+informació pròpia i hereta el pare.
+
+Categoria cap al global:
+  m_c* = (ν_c m_c + κ_1 ν_G m_G) / (ν_c + κ_1 ν_G)
+  ν_c* = clip(ν_c + κ_1 ν_G, 0.5, 500)
+  α_c = m_c* ν_c*,   β_c = (1 - m_c*) ν_c*                           (11)
+
+Subcategoria cap a la categoria:
+  m_s* = (ν_s m_s + κ_2 ν_c* m_c*) / (ν_s + κ_2 ν_c*)
+  ν_s* = clip(ν_s + κ_2 ν_c*, 0.5, 500)
+  α_s = m_s* ν_s*,   β_s = (1 - m_s*) ν_s*                           (12)
+
+Producte:
+  ν_{i,0} = clip(ν_s*, 1, N_max),  N_max = 300
+  α_{i,0} = m_s* ν_{i,0}
+  β_{i,0} = (1 - m_s*) ν_{i,0}                                       (13)
+
+κ_1, κ_2 ∈ [0,1] són pesos de barreja de precisió (per defecte 0.5): si la
+categoria té poca variància pròpia, o el seu ν és petit, mana el global. Així
+s'usen REALMENT els (α_c,β_c) i (α_s,β_s) estimats per moments; no se
+substitueixen per recomptes bruts.
+
+N_max = 300 és només un TOPALL NUMÈRIC de seguretat per evitar priors
+degenerats; no és el mecanisme principal de shrinkage. Sense aquest topall,
+ν_s* podria ser > 500 i el producte s'adaptaria lentament, però la força
+seguiria venint de la variància, no de les impressions. Si es vol un prior
+més informatiu, apujar N_max; si es vol més adaptació, baixar-lo.
+
+Nota: `s_i^eff` i `f_i^eff` (Secció 2.2) són els comptes que entren a (7)-(8)
+a través de n_i = ESS_i. Els comptes IPS crus no s'usen enlloc.
+
+2.3.4 Posterior final i interpretació
+-------------------------------------
+  Inicialització offline (abans del stream):
+    s_slow[i] = s_i^eff      (comptes (5), decaïts)
+    f_slow[i] = f_i^eff      (comptes (5), decaïts)
+    s_fast[i] = f_fast[i] = 0
+    s_org[i], f_org[i] segons (18)
+    α_{i,0}, β_{i,0} segons (13)
+
+  Posterior en qualsevol instant:
+  α_i = α_{i,0} + s_i^{slow} + s_i^{fast} + s_i^{org}
+  β_i = β_{i,0} + f_i^{slow} + f_i^{fast} + f_i^{org}                (14)
+  μ_i = α_i / (α_i + β_i)
+  Var(θ_i) = μ_i (1-μ_i) / (α_i + β_i + 1)
+
+  Nota: el prior α_{i,0} es deriva de les mateixes dades que s_i^{slow};
+  és una aproximació empirical Bayes. El cap N_max de (13) limita quanta
+  evidència heretada pot dominar el producte, de manera que el posterior
+  segueix sent responsive al feedback del producte.
+
+2.3.5 Comprovacions de sanitat
+------------------------------
+  - La mitjana de μ_i ponderada per impressions ha de ser propera a la taxa de
+    compra global del log (≈ compres / impressions), no al CTR.
+  - Cap α_i o β_i pot ser ≤ 0; si passa, s'ha d'aturar i loguejar (error de
+    dades, no de model).
+  - La correlació entre μ_i i el rànquing de best sellers ha de ser positiva
+    però NO 1.0; si és ≈ 1.0, IPS no ha corregit res i cal revisar els pesos.
+
+2.4 FUSIÓ DELS SENYALS ORGÀNICS (shop.history_events)
+-----------------------------------------------------
+shop.history_events conté activitat orgànica que NO ve del carrusel: view,
+add_to_cart i purchase, amb user_id, session_id, product_id, price_eur,
+device i region. És l'única font no esbiaixada per la política antiga, i per
+tant és especialment valuosa per descobrir productes bons que el sistema
+antic mostrava poc.
+
+2.4.1 Agregats amb decaïment
+----------------------------
+Per a cada producte i, amb el mateix decaïment (6):
+
+  V_i = Σ_{e: type=view}        d(ts_e)
+  A_i = Σ_{e: type=add_to_cart} d(ts_e)
+  P_i = Σ_{e: type=purchase}    d(ts_e)                            (15)
+
+Aquests agregats es calculen offline (60 dies) i es mantenen en streaming amb
+el ring buffer de la Secció 4.5.
+
+2.4.2 Conversió orgànica suavitzada
+-----------------------------------
+Els recomptes per producte són petits (sobretot P_i). Suavitzem cap al prior de
+la subcategoria:
+
+  m_s = (Σ_{j∈s} P_j + 1) / (Σ_{j∈s} V_j + 20)     (taxa orgànica de la subcat)
+  (16) q_i = clip((P_i + a_s m_s)/(V_i + a_s), 0, 1)
+
+q_i és la probabilitat de compra per visita orgànica, no per impressió del
+carrusel. És un senyal d'INTENCIÓ, més fort que una impressió, però amb un
+target diferent. Per això no el sumem directament a α_i,β_i: el convertim en
+pseudo-comptes amb una constant K_org petita i calibrada.
+
+2.4.3 Pseudo-comptes orgànics
+-----------------------------
+  n_i^org = K_org * (V_i + 5 * A_i)                                  (17)
+  y_i^org = n_i^org * q_i
+  s_i^org = y_i^org
+  f_i^org = max(n_i^org - y_i^org, 0)                                (18)
+
+  K_org per defecte = 0.01; rang de calibratge [0.001, 0.05].
+  5 * A_i: un add_to_cart equival a ~5 visites en termes d'evidència.
+  El factor 5 és un hiperparàmetre; validar-lo offline (Secció 7).
+
+Calibratge de K_org: sobre els últims 7 dies (holdout temporal), triar K_org
+que minimitzi el log-loss de les compres observades al carrusel, o que iguali
+el moment de primer ordre:
+
+  Σ_i n_i^org (q_i - θ̂_i^{holdout}) ≈ 0
+
+Si K_org és massa gran, el model sobrepondera el senyal orgànic i deixa de
+respondre al feedback del carrusel; si és massa petit, no ajuda en cold start.
+
+2.4.4 Features derivades (per al model contextual i el rànquing)
+-----------------------------------------------------------------
+A més dels pseudo-comptes, definim features estandarditzades:
+
+  f_view_i     = log1p(V_i)                          (popularitat orgànica)
+  f_atc_i      = log1p(A_i) - log1p(E[A_i | s(i)])    (ATC relatiu a subcat)
+  f_purch_i    = log1p(P_i) - log1p(E[P_i | s(i)])
+  f_q_i        = logit(clip(q_i, 0.001, 0.5))
+  f_funnel_i   = (A_i + 1) / (V_i + 10)               (intenció mitjana)
+
+Aquestes features entren a z_{t,i} (Secció 2.6) i, per tant, el seu efecte es
+pot modificar amb el context (device, regió, pàgina).
+
+2.4.5 Detecció de doble comptatge
+---------------------------------
+Els esdeveniments orgànics no haurien d'incloure el carrusel, però per si de
+cas: si un event purchase d'un user_id arriba dins dels 60 s posteriors a un
+feedback nostre amb purchased del mateix producte, no el comptem com a orgànic
+(és el mateix esdeveniment). Mateix criteri per add_to_cart immediatament
+després d'una impressió nostra. Aquesta deduplicació és barata i evita
+inflar P_i.
+
+2.4.6 Per què això ajuda al cold start
+--------------------------------------
+Un producte nou no té impressions ni propensió, però pot tenir views i
+add_to_cart orgànics des del minut zero. Els senyals (15)-(18) li donen un
+posterior inicial amb evidència real, no només text. És la diferència entre
+"no en sabem res" i "la gent l'està mirant i afegint a la cistella".
+
+2.5 PRIOR DE TRANSICIÓ / CO-OCURRÈNCIA P(i|j)
+---------------------------------------------
+Objectiu: si un comprador ha vist j (o ha afegit j a la cistella), quina
+probabilitat hi ha que compri i? Aquest prior connecta recent_views amb la
+compra i és el senyal més fort en peticions de pàgina de producte. Mantenim
+DUES matrius separades, perquè no és el mateix un substitut que un complement:
+
+  T^view_{ji}: co-visites (l'usuari compara productes similars)
+  T^buy_{ji}:  co-compres i view->add_to_cart (l'usuari compra complements)
+
+2.5.1 Model Dirichlet-Multinomial
+---------------------------------
+Per a cada producte origen j i cada matriu M ∈ {view, buy}, el vector de
+destinacions i té una distribució Dirichlet-Multinomial amb paràmetres:
+
+  α^M_{ji} = ñ^M_{ji} + m_{ji}                                       (19)
+
+on ñ^M_{ji} són els comptes observats (decaiguts) corregits per popularitat
+del destí i m_{ji} és la massa prior estructural. La mitjana posterior és:
+
+  P^M(i | j) = (ñ^M_{ji} + m_{ji}) / Σ_l (ñ^M_{jl} + m_{jl})         (20)
+
+Correcció de popularitat del destí:
+
+  ñ^M_{ji} = n^M_{ji} / max(n_i^{in,M}, 1)^α_pop,  α_pop = 0.5       (20b)
+  n_i^{in,M} = Σ_j n^M_{ji}
+
+Sense aquesta correcció, un producte popular co-ocorre amb tot i el seu
+senyal de popularitat es compta dues vegades (una a logit(μ_i) i una altra a
+τ). Amb α_pop = 0.5 es suavitza la cua; α_pop = 1 equival a dividir per la
+popularitat total; α_pop = 0 la desactiva. Alternativa PMI:
+  PMI(i,j) = log( P(i,j) / (P(i)P(j)) ), usar max(PMI,0) com a n^M_{ji}.
+
+Aquesta forma estabilitza productes amb poques co-ocurrències: si n_j = 0,
+P(i|j) = m_{ji}/m_j, és a dir, el prior estructural pur.
+
+2.5.2 Comptes observats i ordre causal
+--------------------------------------
+  C^{view}_{ji}: vegades que i i j apareixen a la mateixa sessió (co-visita)
+  C^{cart}_{ji}: vegades que i apareix a la mateixa sessió que un add_to_cart
+                 de j, AMB ts(view de j) <= ts(add_to_cart)
+  C^{buy}_{ji}:  vegades que i apareix a la mateixa sessió on es compra j,
+                 AMB ts(view de j) <= ts(purchase)
+
+  n^view_{ji} = C^{view}_{ji}
+  n^buy_{ji}  = λ_a C^{cart}_{ji} + λ_p C^{buy}_{ji}                 (21)
+
+  λ_a = 0.6, λ_p = 1.0
+  (la compra és el senyal més fiable; el carret, un pas previ)
+
+L'ordre causal és imprescindible: si un usuari compra un telèfon i DESPRÉS
+mira una funda, no ha de generar la transició funda -> telèfon. Les consultes
+SQL 5.6.2 i 5.6.3 inclouen aquest filtre temporal.
+
+Els comptes es calculen sobre shop.history_events (session_id pla, molt més
+barat que navegar objectes de recent_views) i es decaiguen amb (6). Per a la
+matriu en viu, s'usa el mateix esquema sobre shop.events amb una finestra de
+30-60 min (Secció 4.5).
+
+2.5.3 Prior estructural m_{ji}
+------------------------------
+Per a cada parell (j,i):
+
+  m_{ji} = M_0 * [ λ_sub * 1{s(i)=s(j)}
+                 + λ_brand * 1{b(i)=b(j)}
+                 + λ_cat * 1{c(i)=c(j)}
+                 + λ_sem * cos(e_i, e_j)^2 ] / Z_j                 (22)
+
+  M_0 = 50 (massa prior per fila)
+  λ_sub = 1.0, λ_brand = 0.6, λ_cat = 0.25, λ_sem = 0.8
+  Z_j = Σ_i [ ... ]  (normalitzador perquè m_j = M_0)
+
+La similitud semàntica cos(e_i,e_j) es calcula amb els embeddings de text de
+la Secció 2.5.5. El terme al quadrat fa que només els productes molt semblants
+rebin massa; els vagament semblants, poca.
+
+Excloure la diagonal: n_{jj} = 0 i m_{jj} = 0, de manera que P(j|j) = 0. No
+té sentit recomanar el mateix producte com a "transició" de si mateix; la
+penalització same_view de (38) ho reforça.
+
+2.5.4 Esparsificació i emmagatzematge
+-------------------------------------
+La matriu completa és 5.000 x 5.000 = 25M entrades. Densa en float32 són
+100 MB; massa per a un snapshot que es copia. Guardem les 200 destinacions més
+probables per fila, renormalitzades:
+
+  per a cada j: triar top-200 i per P(i|j), renormalitzar a suma 1,
+  guardar CSR (indptr, indices int32, data float32).
+
+  Cost: 5.000 * 200 = 1M entrades ≈ 8 MB. Lookup O(200).
+
+Si un producte no té cap co-ocurrència, la fila queda amb el prior estructural
+(top-200 per subcategoria/marca/semàntica). Sempre hi ha alguna cosa.
+
+2.5.5 Embeddings de text (TF-IDF hashed)
+----------------------------------------
+Els productes nous només tenen description, brand, category, subcategory. Per
+poder situar-los sense vocabulari previ, usem feature hashing determinista:
+
+  - Tokenitzar: minúscules, regex [a-z0-9àèéíòóúç]{2,}; unigrames i bigrames.
+  - Afegir tokens estructurals amb pes 2: "cat:<c>", "sub:<s>", "brand:<b>".
+  - Per a cada token x: h = crc32(x) mod D; sign = +1 si bit 31 de crc32 = 0,
+    -1 altrament.
+  - Vector dispers: v[h] += sign * (1 + log(1 + tf)).
+  - Normalitzar L2: e_i = v / ||v||_2.
+
+  D = 512 (256 és suficient; 512 millora la similitud sense cost apreciable).
+  crc32 és estable entre processos i màquines (no com hash() de Python, que
+  està salat per procés). Això és imprescindible perquè el producte nou
+  calculat en viu coincideixi amb l'embedding offline.
+
+Opcional: reduir a 128 dimensions amb SVD offline i desar la matriu de
+projecció (512x128) a scratch. Els productes nous es projecten amb la mateixa
+matriu. Si la SVD no està disponible, usar D=512 directament: la similitud
+cosinus funciona igual, només costa una mica més.
+
+2.5.6 Score de transició d'una sessió
+------------------------------------
+Donada la llista de views v_1...v_m (v_m la més recent), amb recency ordinal
+ρ = 0.65 i decaïment temporal τ_sess = 900 s:
+
+  w_r = ρ^{m-r} * exp(-Δt_r / τ_sess),  Δt_r = now - ts(v_r)          (23)
+
+  τ^view_{t,i} = Σ_{r=1..m} w_r * P^view(i | v_r)
+  τ^buy_{t,i}  = Σ_{r=1..m} w_r * P^buy(i | v_r)
+
+  - La view més recent pesa 1; la penúltima, 0.65; una de fa 15 min, ~0.37;
+    una de fa 3 dies, ~0.05. Si ts falta, usar només ρ^{m-r}.
+  - Si hi ha un add_to_cart en viu de l'usuari en els últims 30 min, afegim
+    2.0 * P^buy(i | producte_afegit) a τ^buy (el carret és intenció forta).
+  - Normalitzar cada τ a [0,1] dividint pel seu P95 offline (o pel màxim de
+    la fila) perquè els pesos λ_T^view/λ_T^buy siguin interpretables.
+
+A home/category, τ^view captura substituts (l'usuari compara); a product,
+τ^buy captura complements (l'usuari compra accessoris). Els pesos per pàgina
+s'apliquen a (38), no aquí: així es pot traçar la contribució de cada senyal.
+
+En scoring usem log1p(τ) per comprimir la cua i evitar que un sol producte
+molt co-visitat domini tota la llista.
+
+2.6 PRIOR CONTEXTUAL: REGRESSIÓ LOGÍSTICA BAYESIANA
+---------------------------------------------------
+Els priors Beta donen la qualitat mitjana de cada producte. El model contextual
+explica les DESVIACIONS respecte d'aquesta mitjana segons device, region,
+page, preu i relació amb les views de la sessió. És el que fa que el mateix
+producte pugui puntuar diferent per a un usuari d'iOS a Catalunya que arriba
+a una pàgina de producte, que per a un usuari web a Madrid que arriba al home.
+
+2.6.1 Model de compra per impressió (Bernoulli)
+-----------------------------------------------
+Per a cada petició t i producte i mostrat al slate S_t:
+
+  η_{t,i} = offset_i + z_{t,i}^T β                                   (24)
+  offset_i = logit( clip(μ_i, 1e-4, 1-1e-4) )                        (25)
+  p_{t,i} = σ( η_{t,i} ) = 1 / (1 + exp(-η_{t,i}))                   (26)
+
+  y_{t,i} = 1{y^P_t = i}   (compra d'i en aquesta petició)
+  ω_{t,i} = 1              si y=1 o si i fou clicat
+  ω_{t,i} = w_{k(i)}       si i no fou clicat
+
+  log L(β) = Σ_{t,i∈S_t} ω_{t,i} [ y_{t,i} log p_{t,i}
+                                  + (1-y_{t,i}) log(1-p_{t,i}) ]     (27)
+
+Aquí p_{t,i} és P(compra de i | l'usuari examina i), el MATEIX objectiu que
+μ_i (Secció 2.2). No és una probabilitat condicionada a "hi ha alguna compra"
+ni un softmax sobre el slate: és una probabilitat absoluta per impressió
+examinada. Això és el que fa que offline (2.6), online (4.3) i scoring (3.4)
+comparteixin exactament la mateixa funció d'enllaç (sigmoid) i la mateixa
+escala.
+
+El pes ω_{t,i} és la correcció d'exposició: un producte no clicat al slot k
+només s'ha examinat amb probabilitat w_k; un producte comprat o clicat se sap
+que s'ha examinat. Així el model no sobrepondera els slots baixos ni els
+no-clics.
+
+Per què NO conditional logit: un softmax modela "quin dels 10 es compra", no
+"quina és la probabilitat de compra per examen". Requereix softmax també a la
+inferència i a l'actualització online; barrejar softmax offline amb sigmoid
+online (com feia la versió anterior) canvia l'escala dels gradients i de
+P_any. Si algú vol conditional logit, ha de canviar 2.6.3, 4.3 i 3.4 alhora;
+per defecte NO s'usa.
+
+2.6.2 Features z_{t,i} (d ≤ 32)
+-------------------------------
+  #  Feature (efecte principal o interacció)                Notes
+  1  bias (intercept)                                      calibratge global
+  2  device_is_ios * price_percentile
+  3  device_is_android * price_percentile
+  4  page_is_product * log1p(tau^buy_{t,i})
+  5  page_is_category * log1p(tau^view_{t,i})
+  6-9 region_hash_k * price_percentile                      4 dims
+ 10  log1p(price_i) - mean(log1p(price of recent_views))
+     (si recent_views és buit: user_avg_log_price; si no, mitjana global)
+ 11  log1p(price_i) - log1p(median price of subcategory)
+ 12  is_new_user * log1p(f_view_i)
+ 13  min(m_t, 10)/10 * content_sim_{t,i}
+ 14  sin(2π*hour/24) * price_percentile
+ 15  cos(2π*hour/24) * price_percentile
+ 16  sin(2π*dow/7) * price_percentile
+ 17  cos(2π*dow/7) * price_percentile
+ 18  content_sim_{t,i} = cos(e_i, c_t)                      només si λ_C=0
+ 19  log1p(tau^view_{t,i}) i log1p(tau^buy_{t,i})           només si λ_T*=0
+ 20  same_subcategory_as_last_view
+ 21  same_brand_as_last_view
+ 22  price_percentile_within_subcategory
+ 23  log1p(user_purchases_30d) * log1p(f_view_i)
+ 24  session_has_add_to_cart * log1p(tau^buy_{t,i})
+ 25  f_view_i (estandarditzat)                              Secció 2.4.4
+ 26  f_atc_i (estandarditzat)
+ 27  f_q_i (estandarditzat)
+ 28  b^{tr}_i(t) (estandarditzat)                           només si no és fix
+ 29  log1p(user_category_affinity(u, c(i)))                 opcional, personalitza
+ 30+ (opcional) region_hash x category affinity, brand x price
+
+`user_category_affinity(u,c)` es calcula amb shop.history_events com la suma
+decaïda de views/add_to_cart/purchases de l'usuari a la categoria c, dividida
+pel total d'activitat de l'usuari (suavitzada cap a la mitjana global per als
+usuaris amb poca història). S'actualitza online amb feedback/events i és la
+feature de personalització més barata: fa que un usuari que compra molt en
+una categoria vegi productes d'aquella categoria més amunt, sense necessitar
+matrix factorization.
+
+Nota d'identificabilitat: amb el model Bernoulli principal, aquestes features
+poden entrar com a efectes principals (device, page, region, is_new_user, hour,
+dow, m_t, session_has_atc, user_purchases són identificables perquè y varia
+dins de la petició). La taula mostra una versió amb interaccions, que capta
+heterogeneïtat i és la que s'usa per defecte; si s'opta per conditional logit,
+NOMÉS les interaccions són identificables.
+
+Totes les features contínues s'estandaritzen amb mitjana i desviació
+calculades NOMÉS amb el train (no el holdout), i es desen a scratch. Si una
+feature té desviació 0, es deixa a 0.
+
+Nota de no-doble-comptatge: les features 10, 11, 18, 19 i 28 NO s'inclouen a
+z quan s'usen els termes fixos de (38) (λ_price, λ_C, λ_T^view, λ_T^buy i
+b^{tr}). Si es vol que β les aprengui, posar aquests pesos a 0 i incloure-les.
+Per defecte, z té ~24 dimensions; d ≤ 32 en qualsevol cas.
+
+El session_centroid és la mitjana ponderada per recency ordinal I temporal
+dels embeddings de recent_views:
+
+  w_r = ρ^{m-r} * exp(-Δt_r / τ_sess),  τ_sess = 900 s (15 min)      (28)
+  c_t = Σ_r w_r e_{v_r} / ||Σ_r w_r e_{v_r}||_2
+
+  Δt_r = now - ts(v_r). Si ts falta, usar només ρ^{m-r}. Una view de fa 20 s
+  pesa gairebé 1; una de fa 3 dies pesa ~0.05 i deixa pas als priors i a les
+  tendències.
+
+2.6.3 Versemblança i Laplace
+----------------------------
+  log posterior(β) = Σ_{t,i∈S_t} ω_{t,i} [ y_{t,i} log p_{t,i}
+                     + (1-y_{t,i}) log(1-p_{t,i}) ]
+                   - 0.5 (β - μ_0)^T Σ_0^{-1} (β - μ_0) + cte      (29)
+
+  Prior: μ_0 = 0; Σ_0 = diag(τ_j^2), τ_j = 1.0 (0.5 per al preu).
+  Aquest prior és feble: les dades mana, però evita separació i sobreajust.
+
+  Gradient:  g = Σ_{t,i} ω_{t,i} (y_{t,i} - p_{t,i}) z_{t,i}
+                - Σ_0^{-1}(β-μ_0)
+  Hessiana:  H = Σ_{t,i} ω_{t,i} p_{t,i}(1-p_{t,i}) z z^T + Σ_0^{-1}
+  Posterior: Σ_β = H^{-1},  β_MAP = argmax (Newton/IRLS)               (30)
+
+Implementació: 6-10 iteracions de Newton amb damping (si la log-posterior
+empitjora, reduir el pas a la meitat). d ≤ 32, H és 32x32: trivial. Les files
+són tots els (t,i) mostrats (~20M); processar en chunks de 50k slates i
+acumular g i H. Els pesos ω_{t,i} són els de (27).
+
+Per estabilitat numèrica, centrem z (mitjana 0) i estandarditzem; així H està
+ben condicionada. Si H no és definida positiva per un bug, afegir 1e-6 I.
+
+2.6.4 Alternativa barata si el volum apreta
+-------------------------------------------
+Si entrenar amb 20M files és massa lent, usem case-control: per a cada compra,
+mostrem el producte comprat (y=1) i 3 productes mostrats no comprats (y=0),
+amb pes 1/q (q = probabilitat de mostreig del negatiu). Com que el mostreig
+canvia la prevalença, afegir una correcció d'intercepte log(3) (o recalibrar
+a i T al holdout, Secció 2.8). És el mateix model Bernoulli, només amb mostreig
+de negatius; no canvia la funció d'enllaç ni l'escala de p.
+
+2.6.5 Per què Bayes i no només MLE
+----------------------------------
+  - Thompson Sampling necessita una distribució posterior, no un punt.
+  - Amb poc feedback (cold start, productes nous, canvi de règim), el prior
+    i la incertesa eviten decisions massa confiades.
+  - Laplace dóna Σ_β directament i permet actualitzacions online barates
+    (Secció 4.3) sense refitar tot el model.
+
+2.7 PRIOR DE BIAIX DE POSICIÓ w_k
+---------------------------------
+L'ordre importa perquè els primers slots es miren molt més. Necessitem w_k =
+P(examinar el slot k | l'usuari arriba al carrusel), amb w_1 = 1 per
+identificabilitat.
+
+2.7.1 Model d'examen i EM
+-------------------------
+Per a una impressió del producte i al slot k:
+
+  P(clic | i, k) = w_k * r_i                                         (31)
+
+on r_i és la rellevància del producte (probabilitat de clic si es mira).
+Amb el log antic (best sellers + aleatorietat), r_i i w_k són identificables
+fins a escala. Apliquem EM:
+
+  Inicialització: w_k = CTR_k / CTR_1, k = 1..10 (suavitzat +0.5)
+  Repetir fins a convergència (≤ 50 iteracions):
+    E-step: r_i = clicks_i / Σ_k w_k * n_{ik}      (n_{ik} = impressions)
+    M-step: w_k = clicks_k / Σ_i r_i * n_{ik}
+    Normalitzar: w_k ← w_k / w_1; clip(w_k, 1e-3, 1.0)
+  Criteri: ||w^{new} - w^{old}||_1 < 1e-6
+
+Si un slot no té clics, EM el deixa a 0; el suavitzat i la isotonia ho
+resolen.
+
+2.7.2 Regressió isotònica (monotonia)
+-------------------------------------
+Per construcció w_1 ≥ w_2 ≥ ... ≥ w_10 (l'usuari no mira més el slot 10 que
+el 5). Apliquem Pool Adjacent Violators (PAVA) sobre els w_k estimats:
+
+  - Si w_k < w_{k+1}, fusionar els dos blocs i assignar la mitjana ponderada
+    per impressions.
+  - Repetir fins que la seqüència sigui no creixent.
+  - Després, arrodonir a [w_min, 1], amb w_min = 0.03.
+
+Els valors per defecte (si el log és massa sorollós) són:
+
+  w = [1.00, 0.72, 0.52, 0.39, 0.30, 0.23, 0.18, 0.14, 0.11, 0.08]
+
+Aquests valors són només un punt de partida; SEMPRE s'han de reestimar amb
+les dades del repte. La validació consisteix a comprovar que el model
+d'examen reprodueix el CTR per slot amb error relatiu < 15%.
+
+2.7.3 Biaix de posició en compres
+---------------------------------
+El mateix w_k s'usa com a probabilitat d'exposició en l'actualització de
+compres (Secció 4.2): un no-compra al slot 10 és molt menys informatiu que un
+no-compra al slot 1. No cal un w^P separat: la compra requereix examen, i la
+probabilitat condicional de compra donat examen ja la modela μ_i.
+
+2.7.4 Validació creuada del biaix
+---------------------------------
+  - Comparar el CTR observat per slot amb w_k * r̄ (r̄ = rellevància mitjana).
+  - Si w_2/w_1 > 0.9, sospitar que el log no té prou randomització o que el
+    model d'examen és incorrecte; en aquest cas, fer servir els valors per
+    defecte i no aprendre'ls.
+  - Aquests pesos s'actualitzen offline; en línia no es reestimen perquè la
+    nostra política no randomitza la posició (excepte els slots d'exploració,
+    que sí que ho fan i es podrien usar per a un EM online opcional).
+
+2.8 CALIBRATGE GLOBAL I TEMPERATURA
+-----------------------------------
+El model contextual produeix puntuacions relatives. Per combinar-les amb el
+preu i per detectar si estem sobreconfiats, cal calibrar l'escala.
+
+2.8.1 Probabilitat absoluta coherent
+------------------------------------
+Amb les p_{t,i} del model Bernoulli (26), que ja són P(compra | examen),
+definim:
+
+  P_any(t,S) = 1 - Π_{k=1..10} (1 - w_k * clip(p_{t,i_k}, 0, 0.5))   (32)
+  P(compra i | S) = P_any(t,S) * (w_{k(i)} p_{t,i})
+                    / Σ_{j∈S} (w_{k(j)} p_{t,j})                     (33)
+
+La fórmula (32) inclou explícitament w_k: un producte al slot k només es pot
+comprar si l'usuari l'examina. La versió anterior, 1-Π(1-μ_j), assumia
+w_k = 1 i sobreestimava P_any unes 3 vegades (Σ w_k ≈ 3,5 en lloc de 10).
+Ara, si tots els p són iguals a μ, P_any ≈ Σ_k w_k μ, que és el nombre esperat
+de compres del slate, i la probabilitat per producte (33) queda coherent.
+
+Per a l'ordenació, el factor comú P_any no canvia l'ordre; per a la utilitat
+amb preu i per a l'expected revenue sí que cal la probabilitat absoluta. La
+suma de (33) sobre el slate és P_any ≤ 1.
+
+2.8.2 Temperatura T
+-------------------
+El logit pot ser massa sharp o massa pla. Introduïm:
+
+  η_{t,i} = a + ( offset_i + z_{t,i}^T β ) / T                        (34)
+
+  - T > 1: suavitza (menys sobreconfiança).
+  - T < 1: aguditza (més explotació).
+  - a: intercept global de calibratge (per defecte 0).
+
+S'estimen T i a sobre l'últim 7 dies (holdout temporal) minimitzant la
+log-loss Bernoulli ponderada de (27), amb pesos IPS per corregir el biaix del
+log. Graella T ∈ {0.5, 0.6, ..., 2.0}; a per Newton en una dimensió. Si el
+holdout té poques compres (< 5.000), fixar T = 1.0 i a = 0 (no sobreajustar
+el calibratge).
+
+2.8.3 Mètriques de calibratge
+-----------------------------
+  - Reliability diagram: agrupar p_{t,i} en 10 bins i comparar amb la taxa
+    observada (ponderada per IPS). Ha de ser proper a la diagonal.
+  - Brier score: (1/n) Σ (p - y)^2.
+  - Expected Calibration Error (ECE) < 0.02 objectiu.
+  - Si ECE > 0.05, revisar el clipping de μ i el prior; sovint el problema és
+    que μ estima compres per impressió però el log té compres fora del
+    carrusel (historial orgànic) i cal separar els dos targets.
+
+2.8.4 Quan recalibrar
+---------------------
+  - Offline: cada cop que es refan els priors.
+  - Online: cada 15 min amb el feedback acumulat de la sessió, però NOMÉS
+    canviar T si hi ha ≥ 2.000 files i la millora de log-loss és > 1%.
+    Un canvi de T massa freqüent fa oscil·lar el rànquing.
+
+================================================================================
+3. INFERÈNCIA EN TEMPS REAL I FUNCIÓ DE PUNTUACIÓ
+================================================================================
+
+3.1 CONTRACTE DE LA PETICIÓ I PARSING DEFENSIU
+-----------------------------------------------
+El camp recent_views pot arribar en formats diferents segons la font
+(shop.requests, shop.history_sessions o el notebook). Normalitzar SEMPRE a:
+
+  views: list[tuple[product_id: str, ts: datetime | None]]
+  context: dict amb device, region, page (strings; desconegut -> "?")
+
+Regles de parsing:
+  1. Si recent_views és una string JSON, fer json.loads; si falla, [].
+  2. Si és una llista de dicts: agafar x["product_id"] i x.get("ts").
+  3. Si és una llista de parelles [product_id, ts]: desempaquetar.
+  4. Si és una llista de strings: tractar com a IDs sense ts.
+  5. Descartar IDs que no siguin al catàleg (productes retirats o errors),
+     EXCEPTE si són a `new_product_set`: en aquest cas forçar un refresh del
+     catàleg i continuar, perquè és un producte nou que encara no s'ha aplicat
+     (cold start).
+  6. Conservar l'ordre; l'últim element és la view més recent.
+  7. Si hi ha duplicats, quedar-se amb l'última aparició per producte (la
+     més recent), que és la que millor representa la intenció actual.
+  8. context: si és string JSON, parsejar; si falta device/region/page,
+     usar "web"/"?"/"home" com a valors per defecte.
+  9. ts de la petició: parsejar ISO-8601; si falta, usar el rellotge del
+     servidor menys 0.5 s (per no comptar edat zero).
+
+Mai llançar una excepció per una petició mal formada: retornar una llista
+vàlida de seguretat i loguejar l'error. La reliability val 10 punts.
+
+3.2 FILTRATGE ESTRICTE D'ESTOC ACTIU
+------------------------------------
+Un producte és elegible si i només si:
+
+  elegible(i) = active[i]
+             AND NOT unavailable[i]
+             AND i ∈ index
+             AND price[i] > 0
+             AND i ∉ bought_u                                 (35)
+
+  bought_u: productes que l'usuari ja ha comprat (TTL 30 dies). El simulador
+  diu explícitament que un comprador que ja ha comprat un producte tendeix a
+  no tornar-lo a comprar.
+
+A més, per seguretat:
+  - `unavailable` s'actualitza amb cada catalog_update (tombstone immediat) i
+    es refresca amb un snapshot complet cada 60 s per si s'ha perdut algun
+    esdeveniment.
+  - Just abans del push, es torna a comprovar la llista contra unavailable i
+    active. Si algun ID ha caigut, se substitueix pel següent de la llista
+    d'espera (best_safe) sense duplicar.
+  - Mai recomanar un producte que no sigui al catàleg, encara que aparegui a
+    recent_views.
+
+3.3 GENERACIÓ DE CANDIDATS (80-100)
+-----------------------------------
+Generar 100 candidats (configurable 80-120) amb quotes per font. L'objectiu
+és que el producte correcte hi sigui gairebé sempre (recall@100 ≥ 95%) i que
+el scoring només hagi de triar i ordenar.
+
+  Font                         Quota   Mètode
+  --------------------------------------------------------------------------
+  Transicions de la sessió       35     top per τ_{t,i} (Secció 2.5.6)
+  Contingut (embeddings)         20     top per cos(e_i, c_t) (Secció 2.6.2)
+  Tendències                     10     top per b^{tr}_i(t) (Secció 4.5)
+  Priors per categoria           15     top per μ_i dins de les categories
+                                        de recent_views (o global si no n'hi ha)
+  Exploració                     10     Beta sample entre productes amb
+                                        ESS < 50 o is_new
+  Seguretat (best_safe)          10     best sellers en estoc
+  --------------------------------------------------------------------------
+  Total                         100     unió amb dedupe; si una font no omple
+                                        la quota, les altres ocupen el buit.
+
+Detalls d'implementació:
+  - Transicions: per a les últimes min(5, m) views, sumar les files CSR amb
+    pes ρ^{m-r}; usar np.add.at o un bucle de 5 files (5*200 entrades).
+  - Contingut: producte matriu-vector E @ c_t (5.000x512) ≈ 2,5M FLOPs;
+    np.argpartition per top-20.
+  - Tendències: ja és un vector N; argpartition top-10.
+  - Priors: mascareta per categoria; argpartition top-15.
+  - Exploració: np.random.beta(α_valid, β_valid) per als productes amb ESS
+    baix; argpartition top-10. Això és el mateix mostreig que farà el scoring,
+    però aquí només selecciona candidats; no és el mostreig final.
+  - best_safe: calculat offline i refrescat cada 60 s; exclou unavailable.
+  - Cap producte repetit; usar un set d'índexs.
+  - Si una font retorna menys de la quota, les altres poden ocupar el buit;
+    el total no ha de superar 100 per mantenir el scoring barat.
+
+Per què aquestes quotes:
+  - Les transicions capturen intenció immediata (el senyal més fort).
+  - El contingut cobreix productes sense co-ocurrències i productes nous.
+  - Les tendències capturen el canvi de règim i els pics orgànics.
+  - Els priors garanteixen qualitat base i cobreixen usuaris sense views.
+  - L'exploració garanteix que el model no es tanqui en falses seguretats.
+  - La seguretat garanteix que sempre hi hagi 10 IDs vàlids.
+
+3.4 THOMPSON SAMPLING CONTEXTUAL
+--------------------------------
+Per a cada petició, mostregem els paràmetres incerts i puntuem amb la mostra.
+Això reparteix l'exploració de forma proporcional a la incertesa: un producte
+amb Beta ampla té més probabilitat de rebre un valor alt i, per tant, de ser
+explorat; un producte amb molta evidència i bona mitjana domina l'explotació.
+
+3.4.1 Mostres
+-------------
+  μ̃_i ~ Beta(α_i, β_i)                      per a cada candidat i        (36)
+  β̃   ~ N(μ_β, Σ_β)                        UNA mostra per petició      (37)
+  (β̃ és el vector de pesos contextuals; equival al w̃ de la formulació
+   habitual de Thompson Sampling.)
+
+  Implementació de (37): L = cholesky(Σ_β + 1e-8 I); β̃ = μ_β + L @ z,
+  amb z ~ N(0, I_d). d ≤ 32, cost negligible.
+
+  Opcional: τ̃_{t,i} = τ_{t,i} * exp(σ_T * ε_i), ε_i ~ N(0,1), σ_T = 0.15.
+  Això afegeix exploració sobre les transicions; per defecte desactivat
+  perquè afegeix soroll a un senyal molt fiable.
+
+Per què una sola β̃ per petició: el context és compartit per tots els
+productes del slate. Mostrejar una β̃ diferent per producte trencaria la
+coherència del rànquing i augmentaria la variància sense guany teòric.
+
+3.4.2 Puntuació mostrejada
+--------------------------
+  η̃_{t,i} = a + ( logit( clip(μ̃_i, 1e-5, 1-1e-5) )
+                 + z_{t,i}^T β̃
+                 + λ_T^view * log1p(τ^view_{t,i})
+                 + λ_T^buy  * log1p(τ^buy_{t,i})
+                 + λ_C * cos(e_i, c_t)
+                 + λ_price * f_price(i, t)
+                 + b^{tr}_i(t)
+                 + b^{new}_i
+                 + b^{restock}_i
+                 + b^{price}_i
+                 - pen_same_i - pen_click_i ) / T                     (38)
+
+  p̃_{t,i} = σ( η̃_{t,i} )                                             (39)
+
+  λ_C = 0.5, λ_price = -0.25 (el coeficient el pot aprendre β; aquest terme
+  és un prior estructural estable). Si β ja inclou les features de preu
+  (10-11), posar λ_price = 0 per no comptar-les dues vegades.
+  f_price(i,t) = log1p(price_i) - mean(log1p(price of recent_views));
+  si recent_views és buit, usar user_avg_log_price; si no es coneix, la
+  mitjana global del catàleg.
+  pen_same_i = log(1/δ_same) NOMÉS si context.page == 'product' i i és a
+               recent_views; δ_same = 0.6. A 'home' i 'category' no es
+               penalitza (un bloc de "Continua veient" pot convertir molt bé);
+               per a productes nous sempre 0.
+  pen_click_i = log(1/0.8) si i s'ha clicat recentment sense comprar.
+
+Pesos de transició segons la pàgina:
+  page == 'home' o 'category':  λ_T^view = 0.8, λ_T^buy = 0.3
+  page == 'product':            λ_T^view = 0.4, λ_T^buy = 0.9
+Així a home/category manen els substituts (co-visites) i a product manen els
+complementaris (co-compres), que és el comportament real del comprador.
+
+Nota: (38)-(39) és EL model Bernoulli de (24)-(26), no una aproximació d'un
+conditional logit. p̃ és P(compra | examen), la mateixa escala que μ_i i que
+l'actualització online. T i a (Secció 2.8) calibren l'escala. La probabilitat
+absoluta del slate es recupera amb (32)-(33).
+
+3.4.3 Per què Thompson i no ε-greedy ni UCB
+-------------------------------------------
+  - ε-greedy explora uniformement i malgasta visibilitat en productes dolents.
+  - UCB necessita una constant d'escala i tendeix a sobre-explorar els dubtes.
+  - Thompson reparteix l'exploració segons la probabilitat que un producte
+    sigui el millor, que és exactament el que volem amb 10 slots i un
+    objectiu de conversió.
+  - Amb 3 peticions/s i 2 h de ronda final (~21.600 peticions), Thompson
+    convergeix prou de pressa; a més, els slots 9-10 concentren l'exploració
+    barata (Secció 3.6).
+
+3.4.4 Control de la variància
+-----------------------------
+  - Una sola mostra per producte i petició (common random numbers a tot el
+    slate); no tornar a mostrejar per slot.
+  - No samplejar productes amb ESS > 500 i μ estable: el seu Beta és molt
+    estret i el mostreig no canvia l'ordre. Es pot usar la mitjana per
+    estalviar temps, però np.random.beta vectoritzat ja és molt ràpid.
+  - Els productes amb ESS < 5 es consideren no explorables si no tenen
+    contingut: el seu prior és massa feble i poden ser soroll. En aquest cas
+    s'inicialitzen amb el prior de subcategoria (Secció 4.6).
+
+3.5 UTILITAT: CONVERSIÓ + INGRESSOS
+-----------------------------------
+El criteri principal són les compres esperades. El revenue és el tie-breaker.
+No optimitzem p*price directament perquè prioritzaria productes cars amb
+conversió baixa i perdríem els 50 punts de conversion.
+
+  q_i = clip( log1p(price_i) / log1p(P95_price), 0, 1 )               (40)
+  U_{t,i} = p̃_{t,i} * (1 + ρ * q_i)                                  (41)
+
+  ρ = 0.06 per defecte; rang [0.02, 0.15].
+  P95_price: percentil 95 dels preus del catàleg, congelat offline.
+
+Interpretació: un producte un 50% més car que la mediana rep un boost
+d'utilitat d'aproximadament ρ * (log(1.5)/log(P95)) ≈ 0.02-0.04, suficient
+per desempatar dos productes amb probabilitats gairebé iguals, però insuficient
+per sacrificar un 5% de conversió.
+
+Alternativa lexicogràfica (si el jurat prefereix una regla explicable):
+  1. Ordenar per p̃.
+  2. Dins d'una finestra de tolerància ε = 5% de p̃_max, ordenar per
+     p̃ * price (ingrés esperat).
+  3. Desempatar per μ_i (posterior mean) i, finalment, per product_id.
+Aquesta regla és equivalent a (41) amb un ρ adaptatiu i és més fàcil
+d'argumentar. La implementació recomanada és (41) perquè és diferenciable i
+estable.
+
+3.5.1 Calibratge de ρ
+---------------------
+Sobre el holdout, avaluar una graella ρ ∈ {0, 0.02, 0.04, 0.06, 0.08, 0.10,
+0.15} i maximitzar:
+
+  J(ρ) = 0.75 * normalized(expected purchases) + 0.25 * normalized(revenue)
+
+amb la mateixa política de candidats i ordenació. Si l'empat és molt ajustat,
+triar el ρ més petit (menys risc per a conversion).
+
+3.5.2 Ingressos esperats del slate
+----------------------------------
+  E[revenue | S] = Σ_k w_k * p_{t,i_k} * price_{i_k}                  (42)
+  E[purchases | S] = Σ_k w_k * p_{t,i_k}                              (43)
+
+Aquestes fórmules serveixen per monitoritzar i per comparar polítiques
+offline; no cal calcular-les a cada petició.
+
+3.6 ORDENACIÓ, DIVERSITAT I QUOTES
+----------------------------------
+3.6.1 Per què ordenar per U descendent és òptim (amb independència)
+-------------------------------------------------------------------
+Si les compres dels 10 productes fossin independents i w_1 ≥ ... ≥ w_10,
+aleshores per a un conjunt fix S de 10 productes:
+
+  E[compres | S] = Σ_k w_k * p_{i_k}
+
+Per la desigualtat de reordenació, el màxim s'assoleix assignant la p més gran
+al w més gran, la segona al segon, etc. Per tant, ordenar per U descendent és
+òptim. Amb preu, U ja incorpora el tie-breaker i la mateixa demostració
+s'aplica (U és l'objectiu escalar). Amb diversitat o substitutibilitat, la
+independència es trenca i cal un greedy (3.6.2), que és una bona aproximació
+submodular.
+
+3.6.2 Algorisme d'ordenació
+---------------------------
+  Entrada: candidats C (≤100) amb U_i, p̃_i, similituds semàntiques.
+  Sortida: llista S de 10 índexs.
+
+  Pas 1 (slot 1, exploit):
+    i_1 = argmax_{i∈C} U_i^{mean}
+    on U_i^{mean} usa μ_i (mitjana Beta) i β_MAP, sense mostreig.
+    Objectiu: protegir la conversió del slot més visible. Si l'usuari és fred
+    o hi ha un producte nou amb contingut molt alt, es pot permetre TS al
+    slot 1 (config.exploit_slot1 = False en aquest cas).
+
+  Pas 2 (slots 2-8, TS + diversitat):
+    Per a k = 2..8:
+      score_i = U_i * (1 - λ_div * max_{j∈S} cos(e_i, e_j))            (44)
+      amb λ_div = 0.20.
+      i_k = argmax_{i∈C\S} score_i
+      subjecte a:
+        - màxim 3 productes per subcategoria a S
+        - màxim 5 productes per categoria a S
+        - màxim 2 productes per marca als primers 5 slots
+      Si la restricció bloqueja tots els candidats, relaxar-la (mai deixar
+      un slot buit).
+
+  Pas 3 (slots 9-10, exploració barata):
+    Amb probabilitat ε_expl = 0.5 per slot, triar un producte de:
+
+      E = { i∈C\S : ESS_i < 50 OR is_new[i] }
+      score_i = U_i * (1 + c_ucb / sqrt(ESS_i + 1)),  c_ucb = 0.15
+
+    mostrejat uniformement entre el top-20 per score (propensió coneguda
+    q = 1/20 per a l'actualització off-policy de la Secció 4.2). Si E és
+    buit, usar el millor U restant. El bonus és RELATIU a U (no additiu)
+    perquè U és una probabilitat ~0.01 i un bonus absolut el dominaria.
+    Objectiu: obtenir evidència nova on la visibilitat és barata, sense
+    sacrificar els slots que més converteixen.
+
+  Pas 4 (completar):
+    Si |S| < 10, afegir best_safe en ordre, excloent S i unavailable.
+    Si encara falta (catàleg trencat), repetir la llista? NO: mai duplicar.
+    En aquest cas extrem, retornar els IDs únics disponibles i loguejar un
+    error crític; el fallback de l'organització cobrirà la resta.
+
+3.6.3 Quotes i diversitat: per què
+----------------------------------
+  - Un slate amb 10 productes de la mateixa subcategoria és redundant: el
+    comprador només en vol un. La diversitat augmenta la probabilitat que
+    almenys un encaixi.
+  - Tanmateix, la intenció immediata mana: si l'usuari acaba de veure una
+    cafetera, els primers slots han de ser accessoris de cafetera. Per això
+    les quotes són toves (es relaxen) i la diversitat és un penalty, no un
+    filtre dur.
+  - La quota per subcategoria s'aplica després del càlcul de U, per no
+    alterar el rànquing global dels candidats.
+
+3.7 POLÍTICA DE PETICIONS FREDES (COLD START)
+---------------------------------------------
+Distingim dues coses que sovint es confonen:
+
+  cold(t) (mètrica) = is_new_user[t]
+                      OR (∃ v ∈ recent_views[t] : v ∈ NEW_PRODUCTS)   (45)
+  cold_reserve(t)   = ∃ v ∈ recent_views[t] :
+                      v ∈ NEW_PRODUCTS OR s(v) ∈ NEW_SUBCATS
+
+on NEW_PRODUCTS és el conjunt de product_ids amb change == 'new_product' a
+shop.catalog_updates durant l'esdeveniment, i NEW_SUBCATS és el conjunt de
+subcategories que contenen algun producte nou. `cold` s'usa per avaluar i per
+augmentar l'exploració; `cold_reserve` és l'ÚNIC que activa la reserva
+forçada de slots per a productes nous. Un usuari nou que navega per productes
+consolidats NO ha de patir una reserva artificial.
+
+3.7.1 Usuari nou (is_new_user)
+------------------------------
+  - No hi ha historial d'usuari: bought_u = ∅; user_purchases_30d = 0.
+  - El model contextual ja té is_new_user com a feature; a més, apugem la
+    temperatura d'exploració un 20% (T_eff = 1.2 T) i la diversitat
+    λ_div = 0.25.
+  - Els priors de subcategoria i les tendències pesen més; les transicions
+    només existeixen si recent_views no és buit.
+  - Si recent_views és buit: candidats = priors globals + tendències +
+    best_safe + exploració. No inventar context.
+  - NO es força cap slot de producte nou si cold_reserve = False.
+
+3.7.2 Petició que toca un producte nou o la seva subcategoria
+-------------------------------------------------------------
+Aquest és el cas que dóna punts de cold start. El producte nou pot no tenir
+fila a la matriu de transicions (o en té una de priors), així que:
+  - Calcular el seu embedding en el moment (si no s'ha fet ja) i usar la
+    similitud de contingut amb la resta del catàleg.
+  - Afegir al pool els top-25 per cos(e_i, e_new) i els top-10 per
+    subcategoria/marca del producte nou.
+  - Si el producte nou no s'ha comprat, es pot recomanar ell mateix; la
+    penalització per same_view és 0 per als productes nous.
+  - Reservar 1-2 slots (preferiblement 3-6, no el 1) per al producte nou o
+    per un producte molt similar, si la seva p_{t,i} ≥ 0.7 * p de l'slot 10.
+    Això només s'aplica si cold_reserve = True.
+    Implementació: després de order_slate(), intercanviar el producte nou (o
+    el millor candidat de contingut de la seva subcategoria) amb el slot 3-6
+    corresponent, sense violar les quotes de subcategoria.
+
+3.7.3 Producte nou sense cap senyal
+-----------------------------------
+Si un producte nou apareix al catàleg però no té views, ATC ni compres:
+  - Inicialitzar amb el prior de subcategoria + marca + kNN de descripció
+    (Secció 4.6).
+  - ESS inicial baixa (8-15) → Beta ampla → Thompson l'explora.
+  - No forçar-lo a l'slate si la seva p és clarament inferior; el cost en
+    conversió global seria més gran que el benefici en cold start.
+
+3.7.4 Avaluació cold start
+--------------------------
+  - Offline: agafar les últimes 7 dies i marcar com a "cold" les sessions
+    amb usuaris que no apareixen abans del tall o amb productes creats després
+    del tall. Mesurar hit rate i IPS en aquest subconjunt.
+  - Online: llegir feedback i separar per is_new_user / new_product present a
+    la petició (cal creuar amb shop.requests; el feedback no porta aquest camp,
+    però request_id permet el join).
+
+3.8 PSEUDOCODI COMPLET DE answer()
+----------------------------------
+Signatures recomanades (substitueixen `recommend()` del starter):
+
+  def answer(req, snap, rng) -> list[str]
+  def deterministic_scores(cand, rc, snap) -> (Z, eta_det, p_det, U_det)
+  def sample_scores(cand, Z, eta_det, rc, snap, rng) -> (p, U)
+  def order_slate(cand, p, U, U_mean, snap, cfg,
+                  cold_reserve: bool) -> list[int]
+
+  def answer(req, snap, rng):
+      # 1. Parsing i context
+      views = normalize_views(req.get("recent_views"))
+      ctx = normalize_context(req.get("context"))
+      u = str(req.get("user_id", "?"))
+      cold = bool(req.get("is_new_user", False)) or any(
+                 v in snap.new_product_set for v, _ in views)
+      cold_reserve = any(
+          v in snap.new_product_set or snap.subcategory_id[v] in snap.new_subcats
+          for v, _ in views if v in snap.index)
+      bought = snap.user_bought.get(u, frozenset())
+
+      # 2. Filtre dur (vectoritzat; bought és immutable, iterar-lo és segur)
+      ok = snap.active & ~snap.unavailable & (snap.price > 0)
+      if bought:
+          ok[np.fromiter(bought, dtype=np.int64)] = False
+      valid = np.flatnonzero(ok)
+      if valid.size < 10:
+          return fill_safe(snap, bought, [], 10)
+
+      # 3. Features de sessió (dues transicions + decaïment temporal)
+      idx_views = [snap.index[v] for v, _ in views if v in snap.index]
+      c_t = session_centroid(snap.E, idx_views, rho=0.65, tau_sess=900)
+      tau_view, tau_buy = session_transition(
+          snap, idx_views, rho=0.65, tau_sess=900)
+      has_atc = snap.live_atc.get(u, frozenset())
+      if has_atc:
+          tau_buy = tau_buy + 2.0 * transition_from(snap, has_atc, kind="buy")
+
+      rc = ReqCtx(ctx, u, views, idx_views, c_t, tau_view, tau_buy, cold,
+                  cold_reserve)
+      tau_comb = tau_view + tau_buy
+
+      # 4. Candidats (Secció 3.3)
+      cand = build_candidates(snap, valid, idx_views, c_t, tau_comb,
+                              cold_reserve, rng)
+      if cand.size < 10:
+          cand = np.unique(np.concatenate([cand, valid[:100]]))
+
+      # 5. Scoring: la part determinista es calcula UNA vegada
+      Z, eta_det, p_det, U_det = deterministic_scores(cand, rc, snap)
+      p, U = sample_scores(cand, Z, eta_det, rc, snap, rng)
+
+      # 6. Ordenació (slot 1 = U_det; 2-8 MMR; 9-10 exploració)
+      chosen = order_slate(cand, p, U, U_det, snap, CFG, cold_reserve)
+      if cold_reserve:
+          chosen = apply_cold_reservation(chosen, cand, p, snap, CFG)
+
+      # 7. Validació final i IDs
+      out = [snap.ids[i] for i in chosen if ok[i]]
+      out = unique_keep_order(out)
+      if len(out) < 10:
+          out = fill_safe(snap, bought, out, 10)
+
+      # 8. Score decomposition (mostra 1%, Secció 4.8.9)
+      if rng.random() < 0.01:
+          log_score_decomposition(req, snap, chosen[0], eta_det, rc, p_det)
+      return out[:10]
+
+
+  def deterministic_scores(cand, rc, snap):
+      # Features i part determinista: es calculen UNA vegada
+      Z = build_context_features(cand, rc, snap)
+      mu = snap.alpha[cand] / (snap.alpha[cand] + snap.beta[cand])
+      eta = logit(np.clip(mu, 1e-5, 1 - 1e-5)) + Z @ snap.mu_beta
+      eta += CFG.lambda_T_view * np.log1p(rc.tau_view[cand])
+      eta += CFG.lambda_T_buy  * np.log1p(rc.tau_buy[cand])
+      eta += CFG.lambda_C * (snap.E[cand] @ rc.c_t)
+      eta += CFG.lambda_price * price_delta(cand, rc, snap)
+      eta += snap.trend_boost[cand]
+      eta += snap.new_bonus[cand] + snap.restock_bonus[cand]
+      eta += snap.price_bonus[cand]
+      eta -= same_view_penalty(cand, rc, snap)   # només page == 'product'
+      eta = CFG.a + eta / CFG.temperature
+      p = expit(eta)
+      U = p * (1.0 + CFG.rho * price_norm(cand, snap))
+      return Z, eta, p, U
+
+
+  def sample_scores(cand, Z, eta_det, rc, snap, rng):
+      # Una sola mostra per producte i una per petició; NO recalcular Z/tau/E@c
+      theta = rng.beta(snap.alpha[cand], snap.beta[cand])
+      beta = rng.multivariate_normal(snap.mu_beta, snap.Sigma_beta,
+                                     method="cholesky")
+      mu = snap.alpha[cand] / (snap.alpha[cand] + snap.beta[cand])
+      delta = (logit(np.clip(theta, 1e-5, 1 - 1e-5))
+               - logit(np.clip(mu, 1e-5, 1 - 1e-5))
+               + Z @ (beta - snap.mu_beta)) / CFG.temperature
+      eta = eta_det + delta
+      p = expit(eta)
+      U = p * (1.0 + CFG.rho * price_norm(cand, snap))
+      return p, U
+
+
+  def order_slate(cand, p, U, U_mean, snap, cfg, cold_reserve):
+      chosen_idx = []
+      # Slot 1: exploit amb la mitjana (protegeix la conversió)
+      first = int(np.argmax(U_mean if cfg.exploit_slot1 else U))
+      chosen_idx.append(first)
+      avail = [j for j in range(len(cand)) if j != first]
+
+      ess = snap.alpha[cand] + snap.beta[cand]
+      for k in range(2, 11):
+          # Slots 9-10: exploració ε-uniforme amb propensió coneguda
+          if k >= 9 and rng.random() < cfg.epsilon_explore:
+              E = [j for j in avail
+                   if ess[j] < 50 or snap.is_new[cand[j]]]
+              if E:
+                  s = np.array([U[j] * (1 + cfg.c_ucb / np.sqrt(ess[j] + 1))
+                                for j in E])
+                  top = [E[t] for t in np.argsort(s)[-20:]]
+                  pick = int(rng.choice(top))
+                  chosen_idx.append(pick)
+                  avail.remove(pick)
+                  continue
+
+          best, best_score = None, -1e9
+          for j in avail:
+              if k <= 8:
+                  sim = max((snap.E[cand[j]] @ snap.E[cand[t]]
+                             for t in chosen_idx), default=0.0)
+                  score = U[j] * (1 - cfg.lambda_div * sim)
+              else:
+                  score = U[j]
+              if violates_quota(cand[j], [cand[t] for t in chosen_idx],
+                                snap, k):
+                  score = -1e9
+              if score > best_score:
+                  best, best_score = j, score
+          if best is None or best_score <= -1e8:       # relaxar quotes
+              best = max(avail, key=lambda j: U[j])
+          chosen_idx.append(best)
+          avail.remove(best)
+      return [cand[j] for j in chosen_idx]
+
+Notes d'implementació:
+  - `bought` i `live_atc` són frozenset: iterar-los a answer() és segur encara
+    que el worker publiqui un de nou (copy-on-write, Secció 4.6.8).
+  - `deterministic_scores` i `sample_scores` comparteixen Z, tau, E@c i els
+    termes fixos; no es calcula dues vegades res.
+  - `same_view_penalty` només s'aplica si page == 'product' (Secció 3.4.2).
+  - `order_slate` implementa l'exploració ε-uniforme dels slots 9-10 amb
+    propensió coneguda q=1/20 per a l'actualització off-policy.
+  - `violates_quota` aplica els límits de subcategoria/categoria/marca; si
+    bloqueja tots els candidats, es relaxa i es tria el millor U.
+  - `np.logit` no existeix a numpy antic; usar log(p)-log1p(-p) o scipy.
+  - `expit` = 1/(1+exp(-x)), amb np.tanh per estabilitat.
+  - `rng.multivariate_normal(..., method="cholesky")` requereix numpy ≥1.20.
+
+Complexitat: candidats 100, d 24, E 100x512 per a similituds MMR. Tot
+O(100*d + 100*512 + 10*100*512) ≈ 0,5M operacions, < 5 ms en numpy.
+
+================================================================================
+4. ACTUALITZACIÓ ONLINE DEL POSTERIOR (STREAMING EN TEMPS REAL)
+================================================================================
+
+4.1 INGESTA DE team_NN.feedback
+-------------------------------
+Cada 1-2 s, el feedback_loop consulta:
+
+  SELECT request_id, ts, shown, served_by, fallback_reason, latency_ms,
+         clicked, purchased, revenue_eur
+  FROM team_NN.feedback
+  WHERE request_id != '__init__' AND ts > now() - INTERVAL 30 MINUTE
+  ORDER BY ts DESC LIMIT 10000
+
+  - Finestra amb solapament (30 min) per no perdre files si hi ha latència o
+    si el procés s'ha reiniciat fa poc.
+  - Dedupe local per request_id: `seen_feedback` LRU (TTL 60 min).
+  - Ignorar files amb served_by == 'fallback' per a l'aprenentatge de
+    productes: la decisió no és nostra i el feedback està esbiaixat per la
+    llista de fallback. Sí que s'usen per a:
+      * calibratge de la taxa base de conversió,
+      * monitoratge de reliability i fallback_reason,
+      * detecció que el nostre sistema ha fallat.
+  - Per a served_by == 'team', actualitzar els comptes.
+  - Fins i tot si served_by == 'fallback', si purchased != "", afegir el
+    producte a user_bought[user_id]: l'usuari l'ha comprat i no l'hem de
+    tornar a recomanar, encara que la decisió no fos nostra.
+  - Mantenir un diccionari `req_meta[request_id] = (user_id, is_new_user,
+    cold, context, ts)` amb TTL 45 min; el feedback no porta aquests camps,
+    però els necessitem per actualitzar el model contextual i l'estat
+    d'usuari. Si no hi és (reinici), reconstruir-lo consultant shop.requests
+    per request_id o, si no, saltar només les parts que en depenen.
+
+Els comptes s'actualitzen en un estat mutable del worker (no al Snapshot
+publicat). Cada 1-2 s es publica un Snapshot nou amb una sola assignació.
+Així la inferència mai veu un estat a mitges i no cal lock al camí crític.
+
+4.2 ACTUALITZACIÓ AMB BIAIX DE POSICIÓ
+--------------------------------------
+Per a cada feedback del nostre equip:
+  S = shown (llista de 10 IDs, en ordre)
+  k(i) = posició 1..10 de i a S
+  w_k = biaix de posició (Secció 2.7)
+  c = clicked (o ""), p = purchased (o "")
+
+4.2.1 Model de clic (diagnòstic i exploració)
+---------------------------------------------
+  Si c != "" i c = i:
+      s_click[i] += 1
+      per a j ≠ i a S: f_click[j] += c_neg * w_{k(j)}
+  Si c == "":
+      per a tot j a S: f_click[j] += c_neg * w_{k(j)}
+
+  c_neg = 0.05 (un no-clic al slot 10 gairebé no compta).
+
+Aquest model no és el que governa el rànquing, però:
+  - permet monitoritzar CTR per slot i detectar anomalies,
+  - alimenta el bonus d'exploració (un producte amb molts clics i poques
+    compres pot ser un "clickbait" que no converteix),
+  - serveix per calibrar w_k si es fa un EM online amb els slots
+    d'exploració (opcional).
+
+4.2.2 Model de compra (el que importa)
+--------------------------------------
+  Sigui ρ_fast ∈ [0,1] el repartiment d'evidència entre els dos buffers:
+    ρ_fast = 0.0 en règim normal (tot va a slow)
+    ρ_fast = 0.6 en règim final (la major part va a fast)
+    ρ_fast = 0.3 després de l'annealing
+  δ_slow = 1 - ρ_fast,  δ_fast = ρ_fast,  amb δ_slow + δ_fast = 1.
+  Així cada observació compta UNA vegada; el posterior (14) pot sumar els dos
+  buffers sense duplicar evidència.
+
+  Cas A: p != "" i p = i (compra)
+      s_slow[i] += δ_slow
+      s_fast[i] += δ_fast
+      per a j ≠ i a S: f_slow[j] += δ_slow * c_negP * w_{k(j)}
+                       f_fast[j] += δ_fast * c_negP * w_{k(j)}
+
+      c_negP = 0.02: els altres 9 no són "dolents"; simplement no han estat
+      triats. Penalitzar-los fort seria un error perquè sovint són bones
+      alternatives (substituts). El senyal positiu és molt més fort.
+
+  Cas B: c != "" i p == "" (clic sense compra)
+      f_slow[c] += δ_slow     (l'usuari l'ha examinat i no l'ha comprat)
+      f_fast[c] += δ_fast
+      per a j ≠ c a S: f_slow[j] += δ_slow * c_negP * w_{k(j)}
+                       f_fast[j] += δ_fast * c_negP * w_{k(j)}
+
+      Aquest és el senyal negatiu més net: hi ha hagut examen (clic) i no hi
+      ha hagut compra. És molt més informatiu que un no-clic.
+
+  Cas C: c == "" i p == "" (res)
+      per a tot j a S: f_slow[j] += δ_slow * c_negP * w_{k(j)}
+                       f_fast[j] += δ_fast * c_negP * w_{k(j)}
+
+      Aquí el biaix de posició és crucial: un no-res al slot 1 és evidència
+      moderada que el producte no agrada; al slot 10, gairebé cap.
+
+4.2.3 Correcció per slots d'exploració (opcional)
+-------------------------------------------------
+Els slots 9-10 de vegades es trien uniformement entre un top-20 d'incerts
+(Secció 3.6.2). Això sobre-mostra productes incerts i pot inflar la seva
+taxa de compra aparent si es comparen amb productes que només surten quan
+guanyen. Si es vol una estimació neta, aplicar un pes IPS:
+
+  ω_expl = 1 / q_i,  q_i = probabilitat de selecció del slot d'exploració
+  ω_expl ← min(ω_expl, 10)
+
+  i multiplicar els increments de s/f per ω_expl per als productes mostrats
+  en slots d'exploració. Si no es fa, el biaix és petit perquè la posició
+  ja es corregeix amb w_k; però documentar-ho.
+
+4.2.4 Decaïment dels comptes
+----------------------------
+Cada minut, el worker aplica un decaïment exponencial (el *forgetting factor*
+γ < 1 de la Secció 4.7):
+
+  γ_slow = 0.5 ^ (1 / (7 * 24 * 60)) = 0.999931...   (half-life 7 dies)
+  γ_fast = 0.5 ^ (1 / 20) = 0.965936...              (half-life 20 min)
+
+  s_slow ← γ_slow * s_slow
+  f_slow ← γ_slow * f_slow
+  s_fast ← γ_fast * s_fast
+  f_fast ← γ_fast * f_fast
+
+És una operació vectoritzada sobre 5.000 elements: microscòpica.
+
+4.2.5 Límits de confiança
+-------------------------
+  - El total de pseudo-comptes n_i = s_i + f_i (després del decaïment) es capa
+    a ESS_MAX = 5.000. A efectes pràctics ESS_i ≈ n_i quan els pesos IPS són
+    propers a 1 (feedback propi, slot 1), que és el cas del streaming. Si
+    supera el límit, reescalar s_i i f_i proporcionalment. Sense això, un
+    producte antic amb moltes dades no s'adaptaria mai.
+  - Cap valor negatiu; si el clipping o un error produeix negatius, posar a 0
+    i loguejar.
+  - Els comptes fast no s'usen per si sols: el posterior final és
+    α_i = α_{i,0} + s_slow + s_fast + s_org (14). En règim normal, fast pot
+    estar desactivat (s_fast = 0) per estabilitat; en règim final, actiu.
+
+4.2.6 Ordre de les actualitzacions
+----------------------------------
+  1. Decaïment (si toca).
+  2. Comptes de clic/compra.
+  3. Model contextual (Secció 4.3).
+  4. Estat d'usuari (Secció 4.4).
+  5. Mètriques de monitoratge.
+  6. Publicació del Snapshot nou (recalcular α_i, β_i segons (14) i exposar
+     alpha, beta, boosts i màscares com a arrays immutables).
+
+Si una actualització falla, no s'ha de perdre tot el lot: processar fila a
+fila amb try/except i continuar. Un error en una fila no pot aturar el worker.
+
+4.3 ACTUALITZACIÓ CONTEXTUAL (ADF / SHERMAN-MORRISON)
+-----------------------------------------------------
+Volem que el model contextual aprengui del feedback sense refitar tota la
+logística cada segon. L'aproximació de Laplace permet una actualització
+seqüencial barata (Assumed Density Filtering).
+
+4.3.1 Observació
+----------------
+Per a un feedback amb compra o clic, construïm:
+
+  z = z_{t,i}            (features de la petició t per al producte observat)
+  y = 1 si purchased == i, 0 si clicked == i i purchased == ""
+  ω = 1.0 si y = 1;  0.5 si y = 0 (clic sense compra)
+  p = σ( offset_i + z^T μ_β )                                       (46)
+
+No actualitzem el model contextual amb els 9 productes no observats: no
+sabem si l'usuari els ha mirat i el senyal seria molt sorollós. Els comptes
+Beta (Secció 4.2) ja recullen aquesta informació a nivell de producte.
+
+4.3.2 Recursió
+--------------
+  s = ω * p * (1 - p)                                                (47)
+  Σ_new = Σ - (s * Σ z z^T Σ) / (1 + s * z^T Σ z)                  (48)
+  μ_new = μ + Σ_new z * ω * (y - p)                                  (49)
+
+(48) és Sherman-Morrison per a Λ_new = Λ + s z z^T, amb Λ = Σ^{-1}.
+(49) és el pas de Newton amb la Hessiana aproximada; per a d ≤ 32 és O(d^2).
+
+Propietats:
+  - Si y = p (res a aprendre), μ no canvia.
+  - Si y = 1 i p és petit, el pas és gran (l'error és gran).
+  - Σ decreix en la direcció z (més certesa sobre aquesta combinació).
+  - Mai invertim una matriu d x d a cada feedback: (48) és O(d^2).
+
+4.3.3 Estabilitat numèrica
+--------------------------
+  - Clip p a [1e-6, 1-1e-6].
+  - Després de (48), simetritzar: Σ ← (Σ + Σ^T)/2.
+  - Si un element diagonal de Σ < 1e-10, afegir 1e-8 I.
+  - Si Σ no és definida positiva (Cholesky falla), reiniciar a Σ_0 i loguejar.
+  - Guardar Λ = Σ^{-1} actualitzada pot ser més estable; si es fa, (48) es
+    converteix en Λ_new = Λ + s z z^T i Σ_new = inv(Λ_new). Per a d ≤ 32,
+    invertir és barat i sovint més estable. Triar una de les dues vies i
+    provar-ho amb dades sintètiques.
+
+4.3.4 Reinjecció de variància (forgetting)
+------------------------------------------
+Cada 5 minuts:
+
+  Σ ← λ_Σ * Σ + (1 - λ_Σ) * Σ_0                                      (50)
+  μ ← λ_μ * μ + (1 - λ_μ) * μ_0                                      (51)
+
+  λ_Σ = 0.97, λ_μ = 0.995 en règim normal.
+  λ_Σ = 0.90, λ_μ = 0.99 en règim final (canvi de domini).
+  Σ_0 = diag(τ_j^2), μ_0 = 0.
+
+Això evita que Σ col·lapsi a zero després de moltes actualitzacions i permet
+que el model torni a aprendre si les relacions contextuals canvien.
+
+4.3.5 Refit complet periòdic (opcional però recomanat)
+------------------------------------------------------
+Cada 30 minuts, si hi ha ≥ 500 feedbacks nostres:
+  - Refitar el conditional logit amb les últimes 24 h de feedback
+    (només served_by == 'team'), amb pes 1 per compra i 0.5 per clic.
+  - Inicialitzar Newton a μ_β actual (warm start), 3-5 iteracions.
+  - Substituir μ_β, Σ_β si la log-loss de validació (últims 30 min) millora.
+Això corregeix la deriva que l'ADF acumula i és assequible: 24 h × 3/s ≈
+260k files, d=28, unes poques iteracions de Newton en numpy chunked.
+
+4.3.6 Què aprèn i què no
+------------------------
+  - Aprèn: efecte de device, page, regió, preu relatiu, hora, és nou usuari,
+    similitud de contingut, transició, tendència.
+  - No aprèn: preferències profundes per producte (això ho fan els Beta i la
+    matriu de transicions), ni interaccions d'ordre superior (massa dades).
+  - Si una feature té un coeficient inestable (|μ_j| > 5 o signe contrari al
+    prior), reduir-la o eliminar-la; millor un model simple i estable que un
+    model sobreajustat que oscil·la cada minut.
+
+4.4 COMPRA REPETIDA I ESTAT D'USUARI
+------------------------------------
+El simulador diu: "un comprador que ja ha comprat un producte tendeix a no
+voler-lo tornar a comprar". Això té tres implicacions.
+
+4.4.1 Exclusió dura
+-------------------
+  bought_u = productes comprats per u en els últims 30 dies.
+  A `answer()`, aquests productes s'exclouen del filtre dur (35).
+  Si l'usuari ha comprat 8 dels 10 millors, encara en queden prou; si el
+  catàleg és molt restringit, l'exclusió es relaxa només per als productes
+  comprats fa > 30 dies.
+
+4.4.2 Penalització suau
+-----------------------
+Si no es vol excloure (perquè el producte és consumible i es pot recomprar),
+aplicar:
+
+  pen_repeat_i = log(1 / δ_rep),  δ_rep = 0.1 si comprat fa < 7 dies,
+                                     0.5 si fa 7-30 dies, 1 si > 30 dies
+
+  S'afegeix a (38). Per defecte, exclusió dura per a béns duradors i suau per
+  a consumibles; com no sabem la categoria, usar exclusió dura (més simple i
+  alineada amb el simulador).
+
+4.4.3 Estat en memòria
+----------------------
+  - LRU `user_bought`: màxim 200.000 usuaris, 5 productes per usuari, TTL 30
+    dies. Cost ~50 MB com a màxim; si apreta, 100.000 usuaris.
+  - `user_clicked`: TTL 1 h, per al penalty de clic recent (0.8).
+  - Població inicial: consultar shop.history_events dels últims 30 dies i
+    agrupar per user_id; o carregar-ho de scratch si s'ha persistit.
+  - Actualització online: cada feedback amb purchased afegeix el producte.
+  - Un usuari nou no té estat: cap problema, el model contextual i els priors
+    cobreixen el cas.
+
+4.4.4 Efecte en el cold start
+-----------------------------
+Els usuaris nous (is_new_user) no tenen bought_u, així que no perden
+candidats per exclusió. Però també tenen menys senyal; per això la política
+de 3.7 puja la diversitat i l'exploració.
+
+4.5 TENDÈNCIES AMB shop.events
+------------------------------
+shop.events és el pols orgànic en temps real (~50 events/s). Un pic de
+add_to_cart o purchase en els últims 15-30 min és el millor senyal que una
+tendència ha començat, i és el que ens permet adaptar-nos diumenge sense
+intervenció humana.
+
+4.5.1 Ring buffer per minut
+---------------------------
+Mantenim tres arrays circulars de forma (N, 240), dtype int32:
+
+  views[b, i], atc[b, i], purchases[b, i]
+
+  b = minut (0..239), 240 min = 4 h d'història.
+  Cada event s'assigna al bucket segons el seu ts (no segons l'hora
+  d'arribada): b = floor((now - ts)/60). Si b ≥ 240, s'ignora (massa vell).
+  Cost: 3 * 5.000 * 240 * 4 B ≈ 14 MB.
+
+Incremental:
+  - Watermark last_event_ts; consultar shop.events amb
+    ts > last_event_ts - 2 s (solapament per latències).
+  - Dedupe per (session_id, product_id, event_type, ts) en una LRU de 10 min.
+  - Actualitzar els buckets i last_event_ts.
+  - Si event_type == 'add_to_cart', afegir product_id a live_atc[user_id]
+    (TTL 30 min); això alimenta el bonus de transició de 2.5.6.
+  - Si event_type == 'purchase', afegir product_id a user_bought[user_id]
+    (TTL 30 dies); així l'exclusió de compra repetida també aprèn d'events
+    orgànics.
+  - Cada 10 s, recalcular les finestres i el boost.
+
+4.5.2 Finestres i taxes
+-----------------------
+  V15_i  = Σ_{b=1..15} views[b,i]        (últims 15 min)
+  V180_i = Σ_{b=16..195} views[b,i]      (les 3 h anteriors)
+  A15_i, A180_i, P15_i, P180_i  anàlegs.
+
+  Prior de subcategoria per estabilitat:
+    m_s = (P180_s + 1) / (V180_s + 50)                                (52)
+
+  Taxa base i taxa actual (suavitzades):
+    λ_base_i = (P180_i + κ_t * m_s) / (V180_i + κ_t),  κ_t = 50       (53)
+    λ_now_i  = (P15_i + κ_t * λ_base_i) / (V15_i + κ_t)               (54)
+
+  Lift:
+    L_i = λ_now_i / max(λ_base_i, 1e-5)                               (55)
+
+  Senyal combinat que inclou add_to_cart (leading indicator):
+    s_i = P15_i + 0.25 * A15_i
+    e_i = (P180_i + 0.25 * A180_i) / 12     (esperat en 15 min)       (56)
+    L_i^comb = (s_i + 1) / (e_i + 1)                                  (57)
+
+  Z-score de compres (per saber si el pic és significatiu):
+    z_i = (P15_i - λ_base_i * V15_i) / sqrt(λ_base_i * V15_i + 1)     (58)
+
+4.5.3 Shrinkage jeràrquic de la tendència
+-----------------------------------------
+Els recomptes per producte són petits. Compartim força amb la subcategoria:
+
+  s_sub = Σ_{j∈s(i)} s_j
+  e_sub = Σ_{j∈s(i)} e_j
+  L_sub = (s_sub + 1) / (e_sub + 1)                                   (59)
+
+  n_i = s_i + e_i
+  L_shrunk_i = (n_i * L_i^comb + κ_s * L_sub) / (n_i + κ_s),  κ_s = 10 (60)
+
+Això evita que un sol add_to_cart aïllat dispari un producte; alhora, si tota
+la subcategoria puja, tots els seus productes reben una mica de boost.
+
+4.5.4 Boost bayesià
+-------------------
+  gate_i = clip((P15_i + 0.25 * A15_i) / 3, 0, 1)                     (61)
+  b^{tr}_i = η_T * tanh( log( clip(L_shrunk_i, 0.25, 8) ) ) * gate_i   (62)
+
+  η_T = 0.7 en règim normal; 1.0 en règim final.
+  Cap el resultat a [-0.8, +0.8] perquè cap tendència dispari el rànquing.
+  Si z_i > 2 i P15_i ≥ 3, multiplicar per 1.3 (pic significatiu).
+
+`tanh(log(L))` és una versió suau i acotada del log-lift: L = 2 dóna
+≈ 0.46; L = 4 dóna ≈ 0.83; L = 0.5 dóna ≈ -0.46. Així un producte que
+dobla la seva taxa rep un boost moderat, no un salt desproporcionat.
+
+4.5.5 Injecció de pseudo-comptes (tendència persistent)
+-------------------------------------------------------
+Si un producte té L_shrunk > 1.5 i gate = 1 durant 2 finestres consecutives
+(20 s), injectem evidència directament al buffer fast:
+
+  n_tr_i = K_T * (V15_i + 4 * A15_i),  K_T = 0.005                   (63)
+  p_tr_i = clip(λ_now_i, 0.0005, 0.3)
+  s_fast_i += n_tr_i * p_tr_i
+  f_fast_i += n_tr_i * (1 - p_tr_i)                                  (64)
+
+Això fa que la tendència persisteixi en el posterior encara que el boost
+temporal decaigui, i és especialment útil per a productes nous amb molta
+activitat orgànica. No injectar si el producte no té stock o està inactive.
+
+4.5.6 Decaïment del boost
+-------------------------
+El boost es recalcula cada 10 s. Si un producte deixa de tenir senyal:
+
+  b^{tr}_i ← b^{tr}_i * 0.5 ^ (Δt / 600)                              (65)
+
+  half-life 10 min. Així una tendència que s'apaga no deixa el producte
+  sobrevalorat durant hores.
+
+4.5.7 Detecció de canvi de règim (CUSUM)
+----------------------------------------
+A més del flag de rellotge (09:00 UTC), detectem canvis sobtats:
+
+  Conversió per finestra de 5 min (només feedback team), per reduir soroll:
+    r_t = purchases_t / max(requests_t, 1)
+    r_ref = conversió mitjana de les últimes 24 h (o del train)
+    g_t = max(0, g_{t-1} + (r_ref - r_t) - δ),  δ = 0.005            (66)
+    Alarma si g_t > h = max(5 * r_ref, 0.05)
+  La finestra de 5 min s'avalua cada minut; el CUSUM acumula fins a l'alarma.
+  r_ref s'actualitza amb una EWMA (half-life 1 h) per no quedar-se amb un
+  baseline massa vell; després d'una alarma, es reinicia a la taxa actual.
+
+  Distribució de subcategories:
+    Calcular la distribució de views dels últims 15 min i la de les 3 h
+    anteriors; distància total variation TV = 0.5 * Σ_s |p_s^15 - p_s^180|.
+    Alarma si TV > 0.25 (el mix de trànsit ha canviat).
+
+  Nous productes:
+    Si la fracció de peticions cold puja > 2x respecte de la mitjana de la
+    última hora, alarma (el règim ha canviat).
+
+Quan salta una alarma, cridar regime_shift() (Secció 4.7) i reiniciar el
+CUSUM. No aplicar cap canvi destructiu: només accelerar l'adaptació.
+
+4.5.8 Nou producte amb tendència
+--------------------------------
+Si un producte nou té A15 ≥ 3 o P15 ≥ 1, el seu boost es multiplica per 1.5
+i s'afegeix al pool de candidats encara que el seu prior sigui feble. És el
+millor senyal de cold start: el mercat ja l'està triant.
+
+4.6 GESTIÓ DE shop.catalog_updates I COLD START
+-----------------------------------------------
+shop.catalog_updates és append-only i porta el producte complet després del
+canvi, amb ts i change ∈ {new_product, price_change, out_of_stock,
+back_in_stock}. L'estat actual del catàleg és shop.catalog amb l'últim update
+de cada producte aplicat per sobre.
+
+4.6.1 Ingesta i ordre
+---------------------
+  - Consultar cada 0.5-1.0 s amb watermark i solapament de 5 s:
+      SELECT * FROM shop.catalog_updates
+      WHERE ts > {last_ts} - INTERVAL 5 SECOND
+      ORDER BY ts ASC
+  - Dedupe per (product_id, ts, change).
+  - Processar en ordre de ts. Mantenir last_change_ts[product_id]; ignorar un
+    update si el seu ts és anterior a l'últim aplicat per a aquell producte
+    (arribada fora d'ordre). Això evita que un out_of_stock vell sobreescrigui
+    un back_in_stock nou.
+  - Aplicar el lot en una còpia mutable i publicar un Snapshot nou al final.
+    Si el lot és gran, publicar cada 200 productes per no bloquejar.
+
+4.6.2 new_product: inicialització exacta
+----------------------------------------
+Quan arriba un producte nou i encara no és al catàleg:
+
+  Pas 1. Afegir-lo a les estructures:
+    idx = n_products; n_products += 1
+    ids[idx] = product_id; index[product_id] = idx
+    category[idx], subcategory[idx], brand[idx], price[idx]
+    active[idx] = is_active; unavailable[idx] = False
+    is_new[idx] = True; new_product_set.add(product_id)
+
+  Pas 2. Calcular l'embedding amb el mateix hashing que l'offline
+    (Secció 2.5.5). No cal vocabulari: el producte nou es pot vectoritzar
+    immediatament. Guardar a E[idx].
+
+  Pas 3. Trobar els K = 25 veïns més propers per cosinus:
+    sim_j = E[idx] @ E[:n_products-1].T
+    triar top-25 amb sim_j > 0.05 (si no n'hi ha, usar subcategoria)
+
+  Pas 4. Mitjana prior:
+    w_j = max(sim_j, 0)^2
+    μ_knn = Σ_j w_j μ_j / max(Σ_j w_j, 1e-6)
+    μ_sub = mitjana posterior de la subcategoria (α_s/(α_s+β_s))
+    μ_brand = mitjana de la marca si té ≥ 30 productes; si no, μ_sub
+    μ_glob = mitjana global
+
+    μ_prior = (0.45 * μ_knn + 0.30 * μ_sub
+               + 0.15 * μ_brand + 0.10 * μ_glob) / 1.00               (67)
+
+  Pas 5. Pseudo-comptes amb incertesa alta:
+    ESS_new = 8 (normal), 6 (règim final)                            (68)
+    α0[idx] = μ_prior * ESS_new
+    β0[idx] = (1 - μ_prior) * ESS_new
+    s_slow[idx] = s_fast[idx] = 0; s_org[idx] = 0 (es calcularà si té events)
+
+  Pas 6. Bonus d'exploració:
+    b_new[idx] = c_new / sqrt(ESS[idx] + 1),  c_new = 0.6            (69)
+    Decreix a mesura que arriba evidència; amb ESS = 8 dóna ≈ 0.2, prou per
+    entrar al pool i, de vegades, a l'slate, sense dominar-lo.
+
+  Pas 7. Transicions:
+    - Fila de sortida: top-200 per m_{idx,i} estructural (Secció 2.5.3),
+      normalitzada. Així el producte nou pot portar a productes relacionats.
+    - Entrades: per als 25 veïns, inserir idx a la seva fila top-200 si
+      P(idx|j) supera el mínim actual; si no hi cap, deixar-ho i calcular-ho
+      on-the-fly (Pas 8).
+    - Reconstruir les files afectades (cost 25*200).
+
+  Pas 8. Fallback de transició per a productes nous:
+    Si en calcular τ un producte j no té idx a la seva fila (perquè no hi
+    cabia), calcular directament:
+      T_fallback(j, idx) = m_{j,idx} / m_j                            (70)
+    amb m de (22). Com que els productes nous són pocs, això és barat.
+
+  Pas 9. Pool i política cold:
+    - Afegir sempre idx al pool de candidats de les peticions cold que
+      continguin aquest producte a recent_views.
+    - Reservar 1-2 slots (3-6) si la seva p és ≥ 0.7 * p de l'slot 10.
+    - Si no té cap senyal i la seva p és clarament inferior, no forçar-lo.
+
+4.6.3 price_change
+------------------
+  price[idx] = nou_preu
+  ratio = nou_preu / max(preu_anterior, 1e-6)
+  b_price[idx] = clip(-ε_p * log(ratio), -0.4, +0.4),  ε_p = 0.5       (71)
+  half-life del bonus: 2 h. Cada minut: b_price *= 0.5^(Δt/7200); si arriba
+  un nou price_change, es recalcula i substitueix l'antic.
+  A més, el feature f_price (Secció 3.4.2) canvia immediatament, i el model
+  contextual pot respondre-hi si el coeficient de preu és estable.
+
+  - Si ratio < 0.9 (baixada >10%): el bonus positiu és gran; els productes
+    amb descompte solen convertir més. No reiniciar comptes.
+  - Si ratio > 1.1: bonus negatiu; no eliminar el producte, només baixar-lo.
+  - Si el preu és 0 o negatiu: marcar unavailable i loguejar (dada corrupta).
+
+4.6.4 out_of_stock / back_in_stock
+----------------------------------
+  out_of_stock:
+    unavailable[idx] = True immediatament.
+    Treure idx de best_safe i de qualsevol llista pendent de push.
+    NO esborrar comptes ni prior: quan torni, l'evidència històrica és útil.
+    Si idx ja era unavailable, no fer res (idempotent).
+
+  back_in_stock:
+    unavailable[idx] = False.
+    b_restock[idx] = 0.15, half-life 1 h.                            (72)
+    Reintroduir a best_safe si el seu μ és alt.
+    No reiniciar comptes ni prior.
+
+  Aquests canvis són els més crítics per a reliability: un sol producte
+  out_of_stock en una answer invalida tota la llista. Per això:
+    - tombstone immediat en rebre l'update,
+    - revalidació abans del push,
+    - snapshot complet cada 60 s per reconciliar.
+
+4.6.5 Capacitat i creixement
+----------------------------
+  - Preasignar N_MAX = 8.000 posicions (el catàleg en té ~5.000; marge per a
+    nous productes). Arrays numpy de mida N_MAX; el snapshot publica una
+    vista truncada a n_products.
+  - Mai fer np.append per producte (copiaria 5.000 arrays cada cop).
+  - L'índex dict es copia per snapshot (5.000 entrades, ~0,3 ms); és
+    acceptable.
+  - Si s'arriba a N_MAX, aturar l'addició i loguejar error crític (no hauria
+    de passar).
+
+4.6.6 Validació del catàleg
+---------------------------
+Cada 60 s, consultar el snapshot actual (SQL 5.3) i comparar:
+  - productes presents/absents,
+  - is_active,
+  - preu.
+Si hi ha divergència, reconstruir unavailable/active/price i publicar.
+Això corregeix updates perduts o aplicats fora d'ordre. És la xarxa de
+seguretat; el camí principal és incremental.
+
+4.6.7 Idempotència
+------------------
+Totes les operacions de catàleg han de ser idempotents:
+  - new_product dues vegades: la segona no ha de duplicar l'índex.
+  - out_of_stock dues vegades: no ha de fer res.
+  - price_change amb el mateix preu: no ha de canviar res.
+  - price_change/out_of_stock d'un product_id desconegut: si l'update porta el
+    producte complet, tractar-lo com a new_product; si no, ignorar-lo i
+    esperar el new_product o la reconciliació de 4.6.6.
+Això permet reintentar lots sense por.
+
+4.6.8 Interacció amb el snapshot immutable
+------------------------------------------
+El worker de catàleg no pot mutar les arrays publicades. Estratègia:
+  1. Copiar l'estat mutable intern (o treballar amb buffers propis).
+  2. Aplicar els canvis.
+  3. Construir el Snapshot nou amb vistes (slices) de les arrays.
+  4. Publicar amb `STATE.snapshot = new_snapshot` (assignació atòmica).
+Mentre es construeix, la inferència segueix usant el snapshot vell, que és
+consistent. El cost de copiar 5.000 arrays de 4 bytes és ~1 ms; acceptable
+cada 0.5-1 s. Si es vol zero-copy, usar arrays preasignades i un flag de
+generació, però la copia és més simple i segura.
+
+Excepció: `live_atc` i `user_bought` són diccionaris/sets que només creixen.
+Les operacions get/add/in són atòmiques sota el GIL i el camí de inferència
+no els itera mai; per tant es poden mutar in-place. Si es vol rigor total,
+publicar una còpia cada 10 s (cost ~5.000 entrades) i no mutar la publicada.
+
+4.7 ADAPTACIÓ AL CANVI DE DOMINI (DIUMENGE 09:00 UTC)
+-----------------------------------------------------
+El diumenge 10:00-12:00 CET (09:00-11:00 UTC) el stream canvia a dades
+inèdites: nous compradors, nous productes i noves tendències. El model ha
+d'adaptar-se sol. Estratègia: no reiniciar, sinó ACCELERAR i reinflar la
+incertesa.
+
+4.7.1 Disparador
+----------------
+  - Hard trigger: ara_utc >= 2026-11-15 09:00:00.
+  - Soft trigger: CUSUM (4.5.7) o TV > 0.25 o cold ratio > 2x.
+  - El trigger és idempotent: només s'executa una vegada (flag).
+
+4.7.2 Accions immediates (regime_shift)
+---------------------------------------
+  1. Activar el buffer fast: s_fast/f_fast passen a half-life 20 min i
+     ρ_fast = 0.6 (el 60% de l'evidència nova va a fast; el 40% a slow).
+  2. Reduir l'evidència antiga:
+       s_slow ← 0.25 * s_slow
+       f_slow ← 0.25 * f_slow
+     (es conserva el 25% del senyal històric; prou per no tornar a zero,
+     prou poc perquè les noves dades dominin en ~1 h)
+  3. Cap d'ESS: ESS_MAX = 500 (abans 5.000) durant la primera hora.
+  4. Reinjecció de variància:
+       Σ_β ← 0.5 * Σ_β + 0.5 * Σ_0
+       μ_β ← 0.8 * μ_β
+  5. Transicions: blend amb la matriu live:
+       T ← (1 - μ_live) * T0 + μ_live * T_live
+       μ_live: 0.3 al trigger, puja linealment a 0.7 en 30 min, després
+       es manté.
+     T_live es calcula amb shop.events dels últims 30-60 min (Secció 5.6).
+     Per combinar-les, reindexar la unió de les top-200 de cada fila i
+     renormalitzar; no sumar CSR de mides diferents a cegues.
+  6. Exploració:
+       T_eff ← 1.25 * T
+       ε_expl ← 0.7 (slots 9-10)
+       c_ucb ← 0.25
+       c_new ← 0.8
+  7. Tendències:
+       η_T ← 1.0
+       K_T ← 0.01
+  8. Priors de productes nous:
+       ESS_new ← 6 (més incertesa)
+  9. Registrar l'esdeveniment a scratch i al log.
+
+4.7.3 Annealing
+---------------
+Després de 30 min (09:30 UTC), reduir gradualment l'exploració:
+  T_eff, ε_expl, c_ucb, c_new → valors normals en 30 min (lineal), i
+  ρ_fast → 0.3.
+  μ_live es manté a 0.7 (les transicions vives són millors que les velles).
+  ESS_MAX puja a 2.000 (no cal tornar a 5.000).
+Això evita quedar-se en mode "exploració" tota la ronda final, que perjudicaria
+la conversió.
+
+4.7.4 Què NO fer
+----------------
+  - No reiniciar α, β a zero: es perdria tota la informació útil de
+    subcategoria, marca i text.
+  - No congelar el model: el règim nou és precisament quan cal aprendre.
+  - No apujar la temperatura sense límit: un T massa alt fa el rànquing
+    sorollós i pot baixar la conversió.
+  - No canviar el codi durant la ronda final: el sistema ha de ser autònom.
+
+4.7.5 Monitoratge post-trigger
+------------------------------
+  Cada 5 min, comparar:
+    - conversió team vs baseline de les 24 h prèvies,
+    - fracció de cold requests,
+    - fracció de productes nous a l'slate i a les compres,
+    - latència i fallback.
+  Si la conversió cau > 30% durant 3 finestres seguides:
+    - pujar T_eff un 10% addicional,
+    - pujar l'exploració,
+    - revisar si el problema és de catàleg (out_of_stock massiu) i no de model.
+  Si la conversió puja i el fallback és 0, no tocar res.
+
+4.8 GUARDRAILS DE FIABILITAT I CIRCUIT BREAKER
+-----------------------------------------------
+La reliability val 10 punts, però també és un multiplicador de fet: si una
+answer és invàlida, perdem la conversió d'aquella petició. Aquestes regles són
+no negociables.
+
+4.8.1 Contracte de validació abans del push
+-------------------------------------------
+  def validate(items, snap, bought):
+      if len(items) != 10: return False
+      if len(set(items)) != 10: return False
+      for pid in items:
+          i = snap.index.get(pid)
+          if i is None: return False
+          if not snap.active[i]: return False
+          if snap.unavailable[i]: return False
+          if snap.price[i] <= 0: return False
+          if pid in bought: return False
+      return True
+
+Si falla, reparar:
+  1. Treure els IDs invàlids.
+  2. Completar amb best_safe (excloent duplicats, unavailable i bought).
+  3. Si encara no hi ha 10, recórrer a qualsevol producte elegible.
+  4. Si el catàleg sencer té < 10 elegibles (impossible amb 5.000), retornar
+     els que hi hagi i loguejar error crític.
+
+4.8.2 Batching i puntualitat
+----------------------------
+  - El request_loop fa pull cada 0.25 s; processa les peticions noves i
+    acumula answers.
+  - Push en lot cada 0.3-0.4 s (no una crida HTTP per petició).
+  - Cada answer porta el seu request_id i el model_version.
+  - Si una petició té edat > 2.6 s, s'envia igualment; si > 2.9 s, es descarta
+    (arribaria tard i només ocuparia espai).
+  - Mai esperar una resposta HTTP abans de processar la següent petició: el
+    push es fa en un buffer i, si falla, es reintenta sense bloquejar.
+  - Màxim 2 lots en vol; si n'hi ha més, descartar els més vells.
+  - Si `fresh` té > 30 peticions (reinici, pic, backlog), processar primer les
+    més noves, descartar les que ja tenen > 2.9 s i limitar a 50 per cicle.
+    Així no es bloqueja el bucle responent 180 peticions de cop.
+
+4.8.3 Deduplicació
+------------------
+  - `submitted` LRU (TTL 15 min) amb request_id.
+  - Abans d'incloure una answer al lot, comprovar que no s'ha enviat.
+  - Si un lot falla parcialment, NO reenviar tot el lot a cegues: consultar
+    team_NN.submissions per request_id (SQL 5.8) i enviar només els que
+    falten. Si la consulta falla, reintentar el lot amb idempotència tolerant
+    (l'organització diu que si s'envien diverses, només una compta; però
+    millor no abusar).
+  - Ignorar request_id == "__init__" també a submissions si apareix.
+
+4.8.4 Circuit breaker
+---------------------
+Mètriques cada 10 s:
+  - fallback_rate_5m = fallbacks / requests (de feedback)
+  - p99_latency_ms (de feedback)
+  - error_rate de queries/inserts
+  - available_candidates (nombre d'elegibles)
+
+Estats:
+  NORMAL:
+    tot actiu.
+  DEGRADED (fallback_rate > 1% o p99 > 1.200 ms):
+    - desactivar tendències i refit complet,
+    - reduir candidats a 50,
+    - desactivar exploració (slots 9-10 per U pur),
+    - mantenir només priors + transicions + contingut.
+  SAFE (fallback_rate > 3% o p99 > 2.000 ms o 3 errors seguits):
+    - servir directament best_safe (10 IDs) sense scoring,
+    - continuar intentant recuperar el model en segon pla,
+    - no aturar el procés.
+  RECOVER:
+    - tornar a NORMAL quan fallback_rate < 0.5% i p99 < 800 ms durant 2 min.
+
+El circuit breaker ha de ser automàtic i no dependre de cap intervenció.
+
+4.8.5 Errors de consulta i taules buides
+----------------------------------------
+  - Abans de dissabte 10:00, shop.requests/events/catalog_updates són buides
+    i poden donar "Unknown expression identifier". Capturar l'excepció i
+    reintentar amb backoff exponencial (0.5 s, 1 s, 2 s, ..., màxim 5 s).
+  - Si una consulta de streaming falla, usar l'últim snapshot i continuar.
+  - Si la consulta de requests falla, NO inventar peticions: esperar.
+  - Si l'insert falla, reintentar; si persisteix, loguejar i seguir (les
+    peticions següents tenen prioritat).
+
+4.8.6 Rellotge i zona horària
+-----------------------------
+  - Els ts de les dades són UTC. La finestra final és 10:00-12:00 CET =
+    09:00-11:00 UTC (CET = UTC+1 a l'hivern).
+  - Calcular l'edat de la petició amb el rellotge del servidor, no amb el
+    local. Consultar `SELECT now()` una vegada per minut i mantenir un offset
+    (server_now - local_now). Si no es pot, usar local i assumir NTP.
+  - Si l'offset és > 2 s, loguejar alarmant; pot fer que totes les answers
+    arribin tard.
+  - No usar `datetime.now()` sense timezone; usar `datetime.now(timezone.utc)`.
+
+4.8.7 Supervisió del procés
+---------------------------
+  - Executar amb un supervisor que reiniciï si mor:
+      macOS:  caffeinate -dimsu python starter/recommender.py
+      Linux:  systemd unit amb Restart=always
+      simple: while true; do python ...; sleep 1; done
+  - Impedir la suspensió de la màquina (caffeinate -dimsu a macOS).
+  - Logs a fitxer amb rotació (no omplir el disc en 26 h).
+  - En arrencar, carregar l'últim snapshot de scratch i, si té > 30 min,
+    recalcular els comptes ràpids amb feedback/events recents.
+  - En aturar (SIGTERM), desar un checkpoint final.
+
+4.8.8 Mètriques de monitoratge (cada 10 s)
+------------------------------------------
+  - requests vistes / answerades / enviades / fallides.
+  - latència pròpia (pull → push) p50/p95/p99.
+  - fallback_rate i fallback_reason.
+  - conversió (purchases/requests) de les últimes 1 h i 24 h.
+  - fracció de productes nous a l'slate.
+  - nombre de candidats i temps de scoring.
+  - memòria i CPU.
+  - estat del circuit breaker.
+Aquestes mètriques es poden escriure a scratch (kind = "metrics") per a la
+presentació i per detectar problemes.
+
+================================================================================
+5. EMMAGATZEMATGE A team_NN.scratch I CONSULTES SQL CLAU
+================================================================================
+
+5.1 ESQUEMA JSON DE L'ESTAT
+---------------------------
+team_NN.scratch és una taula JSON sense esquema. Escrivim files planes sempre
+que sigui possible (escalars, arrays i objectes petits), perquè les consultes
+SQL siguin simples i els casts funcionin. Cada fila té `kind`, `snapshot_id`
+i `ts`; els camps niuats (`context.sigma`, `catalog_delta.new_products`) es
+consulten sencers o es deserialitzen al Python.
+
+5.1.1 meta (sempre l'última fila del snapshot; és el commit marker)
+-------------------------------------------------------------------
+{
+  "kind": "meta",
+  "schema_version": 3,
+  "model_version": "v3-bayes-ts",
+  "snapshot_id": "20261115T084500Z",
+  "ts": "2026-11-15T08:45:00Z",
+  "n_products": 5000,
+  "dim_text": 512,
+  "dim_context": 28,
+  "n_product_chunks": 40,
+  "n_embedding_chunks": 40,
+  "config": {"rho": 0.06, "lambda_T": 0.8, "lambda_C": 0.5,
+             "temperature": 1.0, "calib_a": 0.0,
+             "half_life_slow_days": 7, "half_life_fast_min": 20,
+             "ess_max": 5000, "regime": "normal"},
+  "stats": {"alpha_mean": 0.012, "beta_mean": 0.98,
+            "ips_ess_mean": 84.2, "conversion_train": 0.041,
+            "n_new_products": 0, "w": [1.0, 0.72, "..."]}
+}
+
+5.1.2 product_chunk (estadístiques per producte)
+-------------------------------------------------
+{
+  "kind": "product_chunk",
+  "snapshot_id": "20261115T084500Z",
+  "chunk": 0,
+  "ids": ["p_0001", "p_0002", "..."],        // 128 IDs per chunk
+  "alpha0": [3.2, 4.1, "..."],               // float32
+  "beta0": [296.8, 295.9, "..."],
+  "s_slow": [12.4, 3.1, "..."],
+  "f_slow": [988.0, 1201.0, "..."],
+  "s_fast": [0.0, "..."],
+  "f_fast": [0.0, "..."],
+  "s_click": [3.0, "..."],
+  "f_click": [40.0, "..."],
+  "s_org": [0.4, "..."],
+  "f_org": [9.6, "..."],
+  "price": [19.99, 34.5, "..."],
+  "active": [1, 1, 0, "..."],                // 0/1 per compatibilitat
+  "is_new": [0, 0, 1, "..."],
+  "last_change_ts": ["2026-11-10T12:00:00Z", "..."]
+}
+
+5.1.3 embedding_chunk (text)
+----------------------------
+{
+  "kind": "embedding_chunk",
+  "snapshot_id": "20261115T084500Z",
+  "chunk": 0,
+  "ids": ["p_0001", "..."],
+  "dim": 512,
+  "dtype": "float16",
+  "encoding": "base64",
+  "data": "AAAC...=="                     // 128 * 512 * 2 B, base64
+}
+
+Python per codificar/descodificar:
+  import base64, numpy as np
+  def enc(a): return base64.b64encode(
+      np.asarray(a, dtype=np.float16).tobytes()).decode()
+  def dec(s, n, d): return np.frombuffer(
+      base64.b64decode(s), dtype=np.float16).reshape(n, d).astype(np.float32)
+
+5.1.4 transition_chunk (una fila per producte origen)
+-----------------------------------------------------
+{
+  "kind": "transition_chunk",
+  "snapshot_id": "20261115T084500Z",
+  "src_id": "p_0001",
+  "dst_ids": ["p_0123", "p_0456", "..."],     // top-200
+  "p": [0.041, 0.038, "..."]                  // suma 1
+}
+
+5.1.5 context (model contextual i calibratge)
+---------------------------------------------
+{
+  "kind": "context",
+  "snapshot_id": "20261115T084500Z",
+  "feature_names": ["bias", "ios", "android", "..."],
+  "mu": [0.01, -0.02, "..."],                 // d floats
+  "sigma": [[...], "..."],                    // d x d (fila plana o matriu)
+  "feature_mean": ["..."],
+  "feature_std": ["..."],
+  "calib_a": 0.0,
+  "calib_T": 1.05,
+  "position_w": [1.0, 0.72, "..."],
+  "p95_price": 89.9,
+  "region_hash": {"Catalunya": 3, "Madrid": 7}
+}
+
+5.1.6 trend (top 500, no tots)
+------------------------------
+{
+  "kind": "trend",
+  "snapshot_id": "20261115T084500Z",
+  "ts": "2026-11-15T10:31:00Z",
+  "items": [{"id": "p_0123", "lift": 2.4, "z": 3.1, "boost": 0.42}, "..."]
+}
+
+5.1.7 catalog_delta (nous productes i canvis recents)
+------------------------------------------------------
+{
+  "kind": "catalog_delta",
+  "snapshot_id": "20261115T084500Z",
+  "ts": "2026-11-15T10:31:00Z",
+  "new_products": [
+    {"id": "p_new01", "category": "...", "subcategory": "...",
+     "brand": "...", "price_eur": 29.9, "description": "...",
+     "is_active": 1, "embedding_b64": "..."}
+  ],
+  "unavailable": ["p_0007", "..."],
+  "price_changes": [{"id": "p_0011", "old": 20.0, "new": 15.0}]
+}
+
+5.1.8 metrics (monitoratge i presentació)
+-----------------------------------------
+{
+  "kind": "metrics",
+  "snapshot_id": "20261115T084500Z",
+  "ts": "2026-11-15T10:31:00Z",
+  "requests": 12345, "answered": 12340, "fallback_rate": 0.002,
+  "latency_p50": 180, "latency_p95": 420, "latency_p99": 610,
+  "conversion_1h": 0.048, "conversion_24h": 0.041,
+  "new_product_slate_share": 0.07, "circuit": "NORMAL"
+}
+
+5.1.9 product_delta (només els productes que han canviat des de l'últim delta)
+------------------------------------------------------------------------------
+{
+  "kind": "product_delta",
+  "snapshot_id": "20261115T084500Z",
+  "ts": "2026-11-15T10:31:00Z",
+  "ids": ["p_0123", "p_0456", "..."],
+  "s_slow": [12.4, "..."],
+  "f_slow": [988.0, "..."],
+  "s_fast": [0.2, "..."],
+  "f_fast": [1.1, "..."],
+  "s_click": [3.0, "..."],
+  "f_click": [40.0, "..."],
+  "s_org": [0.4, "..."],
+  "f_org": [9.6, "..."],
+  "alpha0": [3.2, "..."],          // només si ha canviat (producte nou)
+  "beta0": [296.8, "..."],
+  "price": [19.99, "..."],         // només si price_change
+  "active": [1, "..."],
+  "is_new": [0, "..."],
+  "last_change_ts": ["...", "..."]
+}
+
+Així un reinici no perd els comptes de l'última hora: carrega el snapshot
+complet i aplica tots els product_delta posteriors (només els IDs modificats,
+~180 per minut amb 3 peticions/s).
+
+5.2 PROTOCOL D'ESCRIPTURA/LECTURA I COMPACTACIÓ
+-----------------------------------------------
+5.2.1 Commit en dues fases
+--------------------------
+  1. Escriure tots els chunks (product, embedding, transition, context, trend)
+     amb el mateix snapshot_id.
+  2. Escriure la fila `meta` AL FINAL.
+  3. Un snapshot només és vàlid si existeix la seva meta i el nombre de chunks
+     coincideix amb n_product_chunks / n_embedding_chunks.
+Així un lector mai carrega un snapshot a mitges.
+
+5.2.2 Freqüència
+----------------
+  - Snapshot complet (product + embedding + transition + context):
+      a l'arrencada i cada 60 min.
+  - Deltes (product_delta, catalog_delta, trend, metrics, context si canvia):
+      cada 30-60 s. product_delta només inclou els IDs que han rebut feedback
+      o canvi de catàleg des de l'últim delta.
+  - En reiniciar:
+      1. llegir l'última meta,
+      2. carregar els chunks d'aquell snapshot_id,
+      3. aplicar les deltes amb ts > meta.ts (product_delta, catalog_delta,
+         trend, context),
+      4. recalcular els comptes dels últims 30 min amb feedback/events.
+  - Còpia local .npz (recomanada) per arrencar en < 2 s sense dependre de
+    RawTree; scratch és la font de veritat per recuperació i per al jurat.
+
+  - `persist()` decideix què escriure segons el rellotge: si fa > 60 min des
+    de l'últim snapshot complet, escriu complet; si no, escriu només deltes
+    (catalog_delta, trend, metrics, context si ha canviat). Així el
+    persist_loop pot cridar persist() cada 60 s sense generar 17 MB/min.
+
+5.2.3 Cost i retenció
+---------------------
+  - Un snapshot complet: ~200 KB de comptes + ~6,8 MB d'embeddings base64 +
+    ~10 MB de transicions ≈ 17 MB.
+  - 26 h × 1/h = 26 snapshots ≈ 440 MB. Acceptable.
+  - Deltes: ~50-200 KB cada 30 s ≈ 0,5 GB en 26 h. Si preocupa, cada 5 min.
+  - No cal esborrar res: la taula és append-only i el lector filtra per
+    snapshot_id. Si es vol netejar, `ALTER TABLE ... DELETE WHERE ts < ...`
+    (si està permès) o simplement ignorar.
+
+5.2.4 Consulta de càrrega
+-------------------------
+  -- 1. Última meta
+  SELECT * FROM team_NN.scratch
+  WHERE kind::String = 'meta'
+  ORDER BY ts::DateTime64(3) DESC
+  LIMIT 1;
+
+  -- 2. Chunks d'aquell snapshot
+  SELECT * FROM team_NN.scratch
+  WHERE kind::String = 'product_chunk'
+    AND snapshot_id::String = '20261115T084500Z'
+  ORDER BY chunk::Int32;
+
+  -- 3. Deltes posteriors
+  SELECT * FROM team_NN.scratch
+  WHERE kind::String IN ('product_delta', 'catalog_delta', 'trend', 'context')
+    AND ts::DateTime64(3) > '2026-11-15 08:45:00'
+  ORDER BY ts::DateTime64(3);
+
+Nota: `kind`, `snapshot_id`, `chunk` són Dynamic; els casts ::String i ::Int32
+són necessaris a les comparacions i a ORDER BY.
+
+5.3 SQL: CATÀLEG ACTUAL
+-----------------------
+Aquesta consulta reconstrueix el catàleg amb l'últim update de cada producte
+aplicat per sobre. És la font de veritat a l'arrencada i cada 60 s.
+
+WITH src AS (
+    SELECT product_id::String        AS product_id,
+           toString(category)        AS category,
+           toString(subcategory)     AS subcategory,
+           toString(brand)           AS brand,
+           toFloat64OrZero(price_eur) AS price_eur,
+           toString(description)     AS description,
+           toDateTime64('1970-01-01 00:00:00', 3) AS updated_at,
+           toUInt8(0)                AS prio,
+           toString(is_active)       AS active_s
+    FROM shop.catalog
+    UNION ALL
+    SELECT product_id::String,
+           toString(category),
+           toString(subcategory),
+           toString(brand),
+           toFloat64OrZero(price_eur),
+           toString(description),
+           ts::DateTime64(3),
+           toUInt8(1),
+           toString(is_active)
+    FROM shop.catalog_updates
+)
+SELECT product_id,
+       category,
+       subcategory,
+       brand,
+       price_eur,
+       description,
+       (active_s = 'true' OR active_s = '1') AS is_active,
+       updated_at
+FROM src
+ORDER BY product_id, prio DESC, updated_at DESC
+LIMIT 1 BY product_id;
+
+Notes:
+  - `LIMIT 1 BY product_id` després de l'ORDER BY deixa la fila amb prio més
+    alt (update guanya) i, dins del mateix prio, la més recent.
+  - `toString` és més segur que un cast directe per a camps Dynamic que poden
+    ser NULL o de tipus mixt. `toFloat64OrZero` evita errors de cast.
+  - Si `description` no és a catalog_updates, el producte nou no en tindrà;
+    usar la de shop.catalog si existeix o una cadena buida.
+  - Si `is_active` falta en un update, `active_s` serà buit i el producte es
+    marcaria inactiu; en aquest cas fer fallback al valor de shop.catalog o
+    usar `ifNull(toString(is_active), 'true')` per als updates.
+  - Aquesta consulta llegeix 5.000 + els updates de 60 dies; és ràpida, però
+    no s'ha d'executar dins del request_loop.
+
+Casts imprescindibles (RawTree guarda cada columna com a Dynamic):
+  product_id::String, category::String, ts::DateTime64(3),
+  price_eur::Float64, revenue_eur::Float64, is_active::Bool.
+Exemple ràpid de validació del catàleg:
+  SELECT count() AS n, avg(price_eur::Float64) AS avg_price
+  FROM shop.catalog
+  WHERE is_active::Bool = true;
+Si un valor pot ser NULL, preferir toString / toFloat64OrZero per evitar que
+el cast faci fallar tota la consulta.
+
+5.4 SQL: IPS I JERARQUIA
+------------------------
+5.4.1 Comptes IPS per producte i slot
+------------------------------------
+WITH s AS (
+    SELECT shown::Array(String)        AS ids,
+           propensity::Array(Float64)  AS props,
+           ifNull(toString(purchased), '') AS purchased
+    FROM shop.history_sessions
+    WHERE ts >= now() - INTERVAL 60 DAY
+)
+SELECT product_id::String AS product_id,
+       count()                                        AS impressions,
+       sum(1.0 / greatest(e, 0.01))                   AS ips_exposure,
+       sum(toUInt8(purchased = product_id)
+           / greatest(e, 0.01))                       AS ips_success,
+       countIf(slot = 1)                              AS imp_slot1,
+       countIf(slot = 1 AND purchased = product_id)   AS pur_slot1
+FROM (
+    SELECT ids, props, purchased, slot,
+           arrayElement(ids, slot)   AS product_id,
+           arrayElement(props, slot) AS e
+    FROM s
+    ARRAY JOIN arrayEnumerate(ids) AS slot
+)
+GROUP BY product_id;
+
+  - `ARRAY JOIN arrayEnumerate(ids) AS slot` genera una fila per slot i
+    permet indexar `ids` i `props` amb `slot` de forma explícita.
+  - Si el cast directe a Array(String) falla per tipus mixt, usar:
+      arrayMap(x -> toString(x), assumeNotNull(shown)) AS ids
+    i per a propensity:
+      arrayMap(x -> toFloat64OrZero(x), assumeNotNull(propensity)) AS props
+  - El pes de posició w_k es pot incorporar dividint per w_{slot} (5.4.2)
+    o aplicant-lo al costat Python després d'haver baixat aquests agregats.
+  - Si 20M files (2M sessions x 10 slots) és massa per al límit de 30 s,
+    particionar per dies o per hash de product_id i unir els resultats:
+      ... AND cityHash64(product_id::String) % 4 = 0
+    executant 4 consultes des de Python.
+
+5.4.2 Amb correcció de posició
+------------------------------
+Substituir els sumatoris per:
+
+       sum(1.0 / greatest(e * w_k, 0.01)) AS ips_exposure_w,
+       sum(toUInt8(purchased = product_id)
+           / greatest(e * w_k, 0.01))     AS ips_success_w
+
+amb:
+
+       arrayElement([1.0, 0.72, 0.52, 0.39, 0.30,
+                     0.23, 0.18, 0.14, 0.11, 0.08], slot) AS w_k
+
+Els valors s'han de substituir pels estimats a 2.7. Si es prefereix fer-ho al
+Python, descarregar impressions i compres per slot i aplicar-ho vectoritzat.
+
+5.4.3 Jerarquia per categoria i subcategoria
+--------------------------------------------
+WITH ips AS ( ...la consulta 5.4.1... ),
+cat AS (
+    SELECT product_id::String AS product_id,
+           toString(category) AS category,
+           toString(subcategory) AS subcategory
+    FROM shop.catalog
+)
+SELECT cat.category,
+       cat.subcategory,
+       sum(ips.ips_success)  AS s,
+       sum(ips.ips_exposure) AS n,
+       count()               AS n_products
+FROM ips
+INNER JOIN cat ON cat.product_id = ips.product_id
+GROUP BY cat.category, cat.subcategory WITH ROLLUP
+ORDER BY cat.category, cat.subcategory;
+
+`WITH ROLLUP` dóna files de subcategoria, de categoria (subcategory NULL) i
+global (tots dos NULL). Així s'obtenen els tres nivells amb una sola consulta.
+
+5.4.4 Nous productes
+--------------------
+SELECT product_id::String AS product_id,
+       toString(category) AS category,
+       toString(subcategory) AS subcategory,
+       toString(brand) AS brand,
+       toFloat64OrZero(price_eur) AS price_eur,
+       toString(description) AS description,
+       ts::DateTime64(3) AS ts
+FROM shop.catalog_updates
+WHERE change::String = 'new_product'
+ORDER BY ts::DateTime64(3);
+
+Aquests IDs formen NEW_PRODUCTS (cold start) i s'han d'inicialitzar a l'estat
+en arrencar, no només quan arriba l'update en directe.
+
+5.4.5 Estoc actual (per a unavailable)
+--------------------------------------
+SELECT product_id::String AS product_id,
+       argMax(change::String, ts::DateTime64(3)) AS last_change
+FROM shop.catalog_updates
+WHERE change::String IN ('out_of_stock', 'back_in_stock')
+GROUP BY product_id
+HAVING last_change = 'out_of_stock';
+
+Aquesta és la consulta del starter, però amb el cast del ts a DateTime64(3)
+explícit. Serveix com a verificació independent del tombstone incremental.
+
+5.5 SQL: SENYALS ORGÀNICS
+-------------------------
+5.5.1 Agregats amb decaïment exponencial
+---------------------------------------
+La funció següent aplica un half-life de 21 dies directament a SQL. És el
+mateix que (6), però sense baixar 12M de files al client:
+
+SELECT product_id::String AS product_id,
+       sumIf(exp(-dateDiff('day', ts::DateTime64(3), now()) / 21.0),
+             event_type::String = 'view')         AS v,
+       sumIf(exp(-dateDiff('day', ts::DateTime64(3), now()) / 21.0),
+             event_type::String = 'add_to_cart')  AS a,
+       sumIf(exp(-dateDiff('day', ts::DateTime64(3), now()) / 21.0),
+             event_type::String = 'purchase')     AS p,
+       countIf(event_type::String = 'view')        AS v_raw,
+       countIf(event_type::String = 'add_to_cart') AS a_raw,
+       countIf(event_type::String = 'purchase')    AS p_raw
+FROM shop.history_events
+WHERE ts >= now() - INTERVAL 60 DAY
+GROUP BY product_id;
+
+  - `dateDiff('day', ts, now())` retorna dies sencers; suficient per a un
+    half-life de 21 dies.
+  - Si now() s'avalua per fila i és lent, calcular-ho una vegada amb
+    `WITH now() AS t SELECT ...`.
+  - 12M files amb GROUP BY 5.000 productes: pesat però viable en una consulta
+    offline. Si excedeix 30 s, particionar per hash de product_id:
+      AND cityHash64(product_id::String) % 4 = 0
+    i repetir per a 0..3. Això és el que recomanem per seguretat.
+
+5.5.2 Agregats per subcategoria (per a q_i)
+-------------------------------------------
+WITH ev AS (
+    SELECT product_id::String AS product_id,
+           sumIf(exp(-dateDiff('day', ts::DateTime64(3), now()) / 21.0),
+                 event_type::String = 'view')     AS v,
+           sumIf(exp(-dateDiff('day', ts::DateTime64(3), now()) / 21.0),
+                 event_type::String = 'purchase') AS p
+    FROM shop.history_events
+    WHERE ts >= now() - INTERVAL 60 DAY
+    GROUP BY product_id
+)
+SELECT toString(c.subcategory) AS subcategory,
+       sum(ev.v) AS v_sub,
+       sum(ev.p) AS p_sub
+FROM ev
+INNER JOIN (
+    SELECT product_id::String AS product_id,
+           toString(subcategory) AS subcategory
+    FROM shop.catalog
+) AS c ON c.product_id = ev.product_id
+GROUP BY subcategory;
+
+5.5.3 Detecció de doble comptatge
+---------------------------------
+Si es vol comprovar que shop.events no inclou el carrusel, comparar el nombre
+de purchases de shop.events amb el de team_NN.feedback en la mateixa finestra:
+
+SELECT count() AS organic_purchases
+FROM shop.events
+WHERE event_type::String = 'purchase'
+  AND ts > now() - INTERVAL 10 MINUTE;
+
+SELECT countIf(purchased != '') AS team_purchases
+FROM team_NN.feedback
+WHERE request_id != '__init__'
+  AND ts > now() - INTERVAL 10 MINUTE;
+
+Si els dos nombres són molt propers i el nombre de peticions és similar, hi ha
+solapament i cal descomptar-lo (Secció 2.4.5).
+
+5.5.4 User-category affinity (feature 29, opcional)
+---------------------------------------------------
+Aquesta consulta construeix la personalització bàsica per categoria. És
+pesada (12M events × usuaris), així que s'executa offline i, si cal, es
+particiona per hash de user_id. El resultat es guarda en un dict
+`user_affinity[user_id][category]` (~300k usuaris × 10 categories).
+
+WITH ev AS (
+    SELECT user_id::String    AS user_id,
+           product_id::String AS product_id,
+           event_type::String AS event_type,
+           exp(-dateDiff('day', ts::DateTime64(3), now()) / 21.0) AS w
+    FROM shop.history_events
+    WHERE ts >= now() - INTERVAL 60 DAY
+      AND cityHash64(user_id::String) % 4 = 0
+),
+cat AS (
+    SELECT product_id::String AS product_id,
+           toString(category) AS category
+    FROM shop.catalog
+)
+SELECT ev.user_id,
+       cat.category,
+       sumIf(ev.w, ev.event_type = 'view')        AS v,
+       sumIf(ev.w, ev.event_type = 'add_to_cart') AS a,
+       sumIf(ev.w, ev.event_type = 'purchase')    AS p
+FROM ev
+INNER JOIN cat ON cat.product_id = ev.product_id
+GROUP BY ev.user_id, cat.category;
+
+  - Executar 4 vegades canviant % 4 = 0 per 1, 2, 3, i unir al Python.
+  - affinity(u,c) = (p + 0.25 a + 0.02 v + a_s * m_c)
+                    / (total_u + a_s),  a_s = 20
+    on m_c és la mitjana global de la categoria (suavitzat per a usuaris
+    amb poca història).
+  - Actualització online: cada feedback o event purchase/ATC incrementa
+    affinity(u, c(product)) amb el mateix decaïment; els usuaris nous
+    arrenquen amb la mitjana global.
+  - Si no es vol aquesta feature, eliminar-la de z; el model funciona igual.
+
+
+5.6 SQL: CO-OCURRÈNCIA I TRANSICIONS
+------------------------------------
+5.6.1 Co-visita per sessió (history_events)
+-------------------------------------------
+Aquesta consulta és la base de C^{view}_{ji}. És pesada (12M files), així que:
+  - Finestra de 30 dies (no 60).
+  - Mostreig per hash de session_id per reduir volum: % 4 = 0.
+  - `LIMIT 200 BY p` per quedar-nos només el top per origen.
+
+WITH v AS (
+    SELECT session_id::String AS sid,
+           product_id::String AS product_id
+    FROM shop.history_events
+    WHERE event_type::String = 'view'
+      AND ts >= now() - INTERVAL 30 DAY
+      AND cityHash64(session_id::String) % 4 = 0
+)
+SELECT a.product_id AS p,
+       b.product_id AS q,
+       count()      AS n
+FROM v AS a
+INNER JOIN v AS b ON a.sid = b.sid
+WHERE a.product_id != b.product_id
+GROUP BY p, q
+ORDER BY n DESC
+LIMIT 200 BY p;
+
+  - Si el join supera els 30 s, baixar a % 8 = 0 o particionar per p:
+      AND cityHash64(a.product_id) % 4 = 0
+    executant 4 consultes i unint els resultats.
+  - `LIMIT n BY p` requereix ORDER BY; és el que volem (top per producte).
+
+5.6.2 Co-compra: view -> purchase dins la mateixa sessió
+--------------------------------------------------------
+WITH v AS (
+    SELECT session_id::String AS sid,
+           product_id::String AS product_id
+    FROM shop.history_events
+    WHERE event_type::String = 'view'
+      AND ts >= now() - INTERVAL 30 DAY
+),
+pur AS (
+    SELECT session_id::String AS sid,
+           product_id::String AS product_id
+    FROM shop.history_events
+    WHERE event_type::String = 'purchase'
+      AND ts >= now() - INTERVAL 30 DAY
+)
+SELECT v.product_id AS src_id,
+       pur.product_id AS dst_id,
+       count()        AS n
+FROM v
+INNER JOIN pur ON pur.sid = v.sid
+WHERE v.product_id != pur.product_id
+GROUP BY src_id, dst_id
+ORDER BY n DESC
+LIMIT 200 BY src_id;
+
+Aquesta és la part més valuosa de (21): la compra és el senyal més fiable.
+Si el volum és excessiu, mostrejar sessions amb cityHash64(sid) % 4 = 0.
+
+5.6.3 Co-add_to_cart
+--------------------
+Mateix patró que 5.6.2, canviant `purchase` per `add_to_cart` i amb
+`event_type::String = 'add_to_cart'`. El resultat s'usa amb λ_a = 0.6.
+
+5.6.4 Matriu en viu (shop.events)
+---------------------------------
+Per al blend de règim final (4.7.2), calcular la mateixa co-visita amb els
+events dels últims 30-60 min. El volum és petit (~50/s × 3600 s = 180k), així
+que es pot fer cada 5 min directament.
+
+5.7 SQL: TENDÈNCIES I STREAMING
+-------------------------------
+5.7.1 Finestres de 15 min vs 3 h (per producte)
+-----------------------------------------------
+Aquesta consulta nodreix el ring buffer en arrencar o després d'un reinici.
+En règim normal, el worker només baixa els events nous (5.7.2) i manté els
+buckets en memòria; no cal executar-la cada 10 s.
+
+SELECT product_id::String AS product_id,
+       countIf(event_type::String = 'view'
+               AND ts > now() - INTERVAL 15 MINUTE)        AS v15,
+       countIf(event_type::String = 'add_to_cart'
+               AND ts > now() - INTERVAL 15 MINUTE)        AS a15,
+       countIf(event_type::String = 'purchase'
+               AND ts > now() - INTERVAL 15 MINUTE)        AS p15,
+       countIf(event_type::String = 'view'
+               AND ts > now() - INTERVAL 195 MINUTE
+               AND ts <= now() - INTERVAL 15 MINUTE)       AS v180,
+       countIf(event_type::String = 'add_to_cart'
+               AND ts > now() - INTERVAL 195 MINUTE
+               AND ts <= now() - INTERVAL 15 MINUTE)       AS a180,
+       countIf(event_type::String = 'purchase'
+               AND ts > now() - INTERVAL 195 MINUTE
+               AND ts <= now() - INTERVAL 15 MINUTE)       AS p180
+FROM shop.events
+WHERE ts > now() - INTERVAL 195 MINUTE
+GROUP BY product_id;
+
+  - 195 min = 15 + 180; així una sola passada calcula les dues finestres.
+  - Si es vol la subcategoria, fer el join amb shop.catalog al Python o afegir
+    una CTE amb els camps estàtics.
+  - El resultat té com a màxim 5.000 files; és lleuger.
+
+5.7.2 Events nous (incremental)
+-------------------------------
+SELECT ts::DateTime64(3) AS ts,
+       event_type::String AS event_type,
+       user_id::String    AS user_id,
+       session_id::String AS session_id,
+       product_id::String AS product_id,
+       toFloat64OrZero(price_eur) AS price_eur,
+       device::String     AS device,
+       region::String     AS region
+FROM shop.events
+WHERE ts > {last_event_ts} - INTERVAL 2 SECOND
+ORDER BY ts::DateTime64(3)
+LIMIT 5000;
+
+  - `last_event_ts` és el watermark local (ISO UTC).
+  - El solapament de 2 s cobreix latències d'ingesta; el dedupe local evita
+    comptar dues vegades.
+  - Si la consulta retorna 5.000 files (límit), tornar a cridar immediatament
+    amb el nou watermark fins que retorni menys.
+
+5.7.3 Requests noves
+--------------------
+SELECT request_id::String AS request_id,
+       ts::DateTime64(3)  AS ts,
+       user_id::String    AS user_id,
+       toString(is_new_user) IN ('true', '1') AS is_new_user,
+       context,
+       recent_views
+FROM shop.requests
+WHERE ts > now() - INTERVAL 60 SECOND
+ORDER BY ts::DateTime64(3) ASC
+LIMIT 300;
+
+  - Finestra de 60 s (no LIMIT 50 a seques): així no es perden peticions si
+    el bucle s'ha aturat o hi ha un pic.
+  - Ordenar ASC per processar primer les més velles (deadline).
+  - El dedupe per request_id es fa al Python.
+  - `context` i `recent_views` són Dynamic: parsejar-los amb el parser
+    defensiu de 3.1.
+  - Si la taula encara no existeix (abans de dissabte 10:00), capturar
+    l'error i reintentar.
+
+5.7.4 Catalog updates incrementals
+----------------------------------
+SELECT product_id::String AS product_id,
+       ts::DateTime64(3) AS ts,
+       change::String AS change,
+       toString(category) AS category,
+       toString(subcategory) AS subcategory,
+       toString(brand) AS brand,
+       toFloat64OrZero(price_eur) AS price_eur,
+       toString(description) AS description,
+       toString(is_active) AS active_s
+FROM shop.catalog_updates
+WHERE ts > {last_catalog_ts} - INTERVAL 5 SECOND
+ORDER BY ts::DateTime64(3) ASC
+LIMIT 2000;
+
+  - Processar en ordre de ts i dedupe per (product_id, ts, change).
+  - Si es vol un snapshot complet, usar 5.3 cada 60 s.
+
+5.7.5 Feedback incremental
+--------------------------
+SELECT request_id::String AS request_id,
+       ts::DateTime64(3) AS ts,
+       shown::Array(String) AS shown,
+       served_by::String AS served_by,
+       fallback_reason::String AS fallback_reason,
+       toFloat64OrZero(latency_ms) AS latency_ms,
+       ifNull(toString(clicked), '') AS clicked,
+       ifNull(toString(purchased), '') AS purchased,
+       toFloat64OrZero(revenue_eur) AS revenue_eur
+FROM team_NN.feedback
+WHERE request_id != '__init__'
+  AND ts > now() - INTERVAL 30 MINUTE
+ORDER BY ts::DateTime64(3) DESC
+LIMIT 10000;
+
+  - `shown` pot ser Array(Dynamic); si el cast falla, usar
+    arrayMap(x -> toString(x), assumeNotNull(shown)).
+  - Dedupe per request_id al Python.
+  - No filtrar per served_by a SQL: les files de fallback també serveixen per
+    monitorar; el Python decideix què actualitza.
+
+5.7.6 Estat del règim (per al CUSUM)
+------------------------------------
+SELECT countIf(event_type::String = 'purchase') AS purchases,
+       countIf(event_type::String = 'view')     AS views,
+       count()                                  AS events
+FROM shop.events
+WHERE ts > now() - INTERVAL 5 MINUTE;
+
+SELECT countIf(purchased != '') AS purchases,
+       count()                  AS requests
+FROM team_NN.feedback
+WHERE request_id != '__init__'
+  AND ts > now() - INTERVAL 5 MINUTE;
+
+Aquestes dues consultes, cada 1-5 min, alimenten el CUSUM de 4.5.7.
+
+5.7.7 Cost de les consultes en directe
+--------------------------------------
+  - requests: ~180 files per crida (3/s × 60 s), trivial.
+  - events: ~3.000 files per crida si es fa cada minut (50/s × 60 s).
+    Fer-ho cada 10 s redueix a ~500 files.
+  - feedback: ~900 files per crida (3/s × 300 s) amb la finestra de 10 min.
+  - catalog_updates: poques files.
+  - Cap d'aquestes consultes ha de trigar més de 150 ms en condicions normals.
+    Si en triga més, el problema és la xarxa o el servei, no el volum.
+
+5.8 SQL: FEEDBACK, FIABILITAT I RECONCILIACIÓ
+---------------------------------------------
+5.8.1 Conversió i ingressos per hora i servei
+---------------------------------------------
+SELECT toStartOfHour(ts::DateTime64(3))        AS hour,
+       served_by::String                       AS served_by,
+       count()                                 AS requests,
+       100 * countIf(clicked != '') / count()  AS ctr_pct,
+       100 * countIf(purchased != '') / count() AS conversion_pct,
+       sum(toFloat64OrZero(revenue_eur)) / count() AS revenue_per_request
+FROM team_NN.feedback
+WHERE request_id != '__init__'
+GROUP BY hour, served_by
+ORDER BY hour DESC, served_by;
+
+Aquesta és la consulta de l'starter, amb el cast del ts. Serveix per a la
+presentació i per detectar si el model supera el fallback.
+
+5.8.2 Reliability: motius de fallback i latència
+------------------------------------------------
+SELECT fallback_reason::String             AS fallback_reason,
+       count()                             AS requests,
+       quantile(0.5)(toFloat64OrZero(latency_ms))  AS p50_ms,
+       quantile(0.95)(toFloat64OrZero(latency_ms)) AS p95_ms,
+       quantile(0.99)(toFloat64OrZero(latency_ms)) AS p99_ms
+FROM team_NN.feedback
+WHERE ts > now() - INTERVAL 30 MINUTE
+  AND request_id != '__init__'
+GROUP BY fallback_reason
+ORDER BY requests DESC;
+
+Objectiu: fallback_reason = '' en > 99% de les files i p99 < 1.000 ms.
+
+5.8.3 CTR per slot (per validar w_k)
+------------------------------------
+SELECT indexOf(shown::Array(String), toString(clicked)) AS slot,
+       count()                 AS clicks
+FROM shop.history_sessions
+WHERE clicked IS NOT NULL
+  AND toString(clicked) != ''
+GROUP BY slot
+ORDER BY slot;
+
+Per al model d'examen cal també el nombre d'impressions per slot:
+
+SELECT slot, count() AS impressions
+FROM (
+    SELECT arrayJoin(arrayEnumerate(shown::Array(String))) AS slot
+    FROM shop.history_sessions
+)
+GROUP BY slot
+ORDER BY slot;
+
+Amb clicks_k i impressions_k, el Python pot inicialitzar/validar l'EM de 2.7.
+
+5.8.4 Reconciliació de submissions
+----------------------------------
+Si un lot de push falla i no se sap si s'ha escrit:
+
+SELECT request_id::String AS request_id
+FROM team_NN.submissions
+WHERE request_id::String IN ('r_001', 'r_002', '...');
+
+  - Enviar només els request_id que no hi són.
+  - Si la consulta falla, reintentar el lot sencer amb backoff; com que
+    l'organització només compta una answer per request_id, el risc és baix,
+    però no s'ha d'abusar.
+  - Si es vol comprovar la nostra latència real, creuar submissions amb
+    feedback per request_id.
+
+5.8.5 Verificació d'estoc just abans del push
+---------------------------------------------
+SELECT product_id::String AS product_id,
+       argMax(change::String, ts::DateTime64(3)) AS last_change
+FROM shop.catalog_updates
+WHERE change::String IN ('out_of_stock', 'back_in_stock')
+  AND ts > now() - INTERVAL 10 MINUTE
+GROUP BY product_id
+HAVING last_change = 'out_of_stock';
+
+  - Consulta petita (últims 10 min) per refrescar el tombstone si el worker
+    de catàleg s'ha quedat enrere.
+  - No s'ha de fer per a cada petició; n'hi ha prou cada 5-10 s o abans d'un
+    lot gran.
+
+5.8.6 Rellotge del servidor
+---------------------------
+SELECT now() AS server_now;
+
+  - Executar una vegada per minut.
+  - offset = server_now - local_now_utc; usar-lo per calcular l'edat de les
+    peticions.
+  - Si |offset| > 2 s, alarmar.
+
+5.8.7 Diagnòstic de productes sense stock
+-----------------------------------------
+SELECT c.product_id::String AS product_id,
+       countIf(e.event_type::String = 'view') AS views,
+       countIf(e.event_type::String = 'purchase') AS purchases
+FROM shop.events AS e
+INNER JOIN shop.catalog AS c
+    ON c.product_id::String = e.product_id::String
+WHERE e.ts > now() - INTERVAL 1 HOUR
+GROUP BY product_id
+ORDER BY views DESC
+LIMIT 50;
+
+Creuar-ho amb unavailable per detectar productes que la gent mira però que no
+podem recomanar. No canvia el model, però ajuda a explicar caigudes de
+conversió.
+
+5.9 HTTP: QUERY I INSERT
+------------------------
+5.9.1 Query
+-----------
+  POST {API}/v1/query
+  Authorization: Bearer $RAWTREE_API_KEY
+  Content-Type: application/json
+  Body: {"sql": "<SELECT ...>"}
+
+  Resposta (format del starter):
+    {"data": [{"col": valor, ...}, ...], ...}
+  Les columnes són Dynamic; els valors arriben amb el seu tipus JSON.
+
+Python:
+  def query(sql: str, timeout: float = 10.0) -> list[dict]:
+      r = http.post(f"{API}/v1/query", json={"sql": sql}, timeout=timeout)
+      r.raise_for_status()
+      return r.json()["data"]
+
+Per a consultes offline pesades, afegir `SETTINGS max_execution_time = 25` al
+final de la SQL o usar un timeout de 35 s (el servei talla a 30 s); si s'acosta
+al límit, particionar la consulta (hash de product_id o session_id).
+
+5.9.2 Insert
+------------
+  POST {API}/v1/tables/{table}?database=team_NN
+  Authorization: Bearer $RAWTREE_API_KEY
+  Content-Type: application/json
+  Body: [ {fila1}, {fila2}, ... ]
+
+  Resposta: conté counters, amb `written_rows` com a string, p. ex.
+    {"read_rows": "2", "written_rows": "2", ...}
+
+Python:
+  def insert_rows(table: str, rows: list[dict], timeout: float = 5.0) -> int:
+      if not rows:
+          return 0
+      r = http.post(f"{API}/v1/tables/{table}",
+                    params={"database": TEAM}, json=rows, timeout=timeout)
+      r.raise_for_status()
+      return int(r.json().get("written_rows", 0))
+
+Nota: el body màxim és 100 MiB i el límit és 1.000 inserts/s per taula. Un lot
+de 1-2 answers cada 0.3 s està molt lluny del límit. Per a scratch, els
+snapshots grans (6-10 MB) s'han d'enviar en chunks de com a màxim ~8 MB per
+no acostar-se al límit i per poder reintentar sense reenviar tot.
+
+5.9.3 Sessions HTTP per fil
+---------------------------
+`requests.Session` no és thread-safe. Crear una Session per fil (request,
+feedback, events, catalog, persist) amb el header Authorization. Reutilitzar
+la connexió és el que manté la latència baixa (keep-alive).
+
+5.9.4 Errors i reintents
+------------------------
+  - 429 rate_limit_exceeded: respectar `retry-after`.
+  - 413 payload_too_large: dividir el lot.
+  - 408 request_timeout: reduir la consulta o augmentar particions.
+  - 5xx: reintentar amb backoff exponencial (0.5, 1, 2, 4 s) i jitter.
+  - Un insert fallit no garanteix que no s'hagi escrit res: reconciliar amb
+    5.8.4 abans de reenviar.
+
+5.9.5 Exemple de push de submissions
+------------------------------------
+  def push(answers: list[dict]) -> int:
+      # answers: [{"request_id":..., "items":[...], "model_version":...}]
+      return insert_rows("submissions", answers, timeout=5.0)
+
+  - Cridar cada 0.3-0.4 s amb 1-3 answers.
+  - Comprovar `written_rows == len(answers)`; si no, loguejar i reconciliar.
+  - No incloure camps extra que no siguin JSON-serialitzables (numpy types):
+    convertir np.int64/np.float32 a int/float amb .item().
+
+5.9.6 Exemple de càrrega de priors
+----------------------------------
+  def load_snapshot() -> dict:
+      meta = query("""
+          SELECT * FROM team_NN.scratch
+          WHERE kind::String = 'meta'
+          ORDER BY ts::DateTime64(3) DESC
+          LIMIT 1""")[0]
+      sid = meta["snapshot_id"]
+      chunks = query(f"""
+          SELECT * FROM team_NN.scratch
+          WHERE kind::String = 'product_chunk'
+            AND snapshot_id::String = '{sid}'
+          ORDER BY chunk::Int32""")
+      # concatenar arrays, decodificar embeddings base64, reconstruir CSR
+      return ...
+
+  - Si no hi ha cap meta (primer arrencada), calcular els priors offline i
+    escriure'ls.
+  - Si la meta té > 6 h, no confiar-hi cegament: recalcular els comptes
+    offline o aplicar un decaïment extra.
+
+================================================================================
+6. IMPLEMENTACIÓ SOBRE starter/recommender.py
+================================================================================
+
+6.1 MAPA DE MÒDULS
+------------------
+Es pot implementar tot en un sol fitxer, però per llegibilitat (el jurat mira
+el repo) es recomana aquesta estructura mínima:
+
+  starter/
+    recommender.py        # entrypoint: config, estat global, bucle principal
+    rawtree.py            # query(), insert_rows(), reintents, clock offset
+    state.py              # Snapshot, StateHolder, LRU, publicació atòmica
+    text.py               # tokenització, hashing, embeddings
+    priors.py             # offline: IPS, jerarquia, transicions, Laplace, w_k
+    features.py           # build_context_features(), session_centroid(), tau
+    scoring.py            # score_candidates(), order_slate(), answer()
+    workers.py            # feedback_loop, events_loop, catalog_loop, persist
+    config.py             # CFG (dataclass) i valors per defecte
+    tests/test_engine.py  # tests de validesa i latència
+
+  offline_build.py        # executable que genera priors i escriu a scratch
+  scripts/check_health.py # consultes de monitoratge
+
+Si el temps apreta, es pot mantenir tot a recommender.py amb seccions
+comentades; el més important és que `answer()` i els workers estiguin separats
+conceptualment.
+
+6.2 ESTRUCTURES I SIGNATURES
+----------------------------
+  @dataclass(frozen=True)
+  class Snapshot:
+      ids: list[str]
+      index: dict[str, int]
+      n: int
+      category: np.ndarray
+      subcategory: np.ndarray
+      brand: np.ndarray
+      price: np.ndarray
+      active: np.ndarray
+      unavailable: np.ndarray
+      is_new: np.ndarray
+      alpha0: np.ndarray
+      beta0: np.ndarray
+      alpha: np.ndarray
+      beta: np.ndarray
+      s_slow: np.ndarray
+      f_slow: np.ndarray
+      s_fast: np.ndarray
+      f_fast: np.ndarray
+      s_click: np.ndarray
+      f_click: np.ndarray
+      s_org: np.ndarray
+      f_org: np.ndarray
+      E: np.ndarray                  # (N_MAX, D) float32
+      trans: CSR                     # indptr, indices, data
+      mu_beta: np.ndarray
+      Sigma_beta: np.ndarray
+      calib_a: float
+      calib_T: float
+      w: np.ndarray                  # (10,)
+      trend_boost: np.ndarray
+      new_bonus: np.ndarray
+      restock_bonus: np.ndarray
+      price_bonus: np.ndarray
+      best_safe: np.ndarray
+      live_atc: dict[str, set[int]]
+      user_bought: LRU
+      user_clicked: LRU
+      user_affinity: LRU
+      new_product_set: frozenset[str]
+      p95_price: float
+      feature_mean: np.ndarray
+      feature_std: np.ndarray
+      ts: float
+
+  class StateHolder:
+      def __init__(self, snap: Snapshot): self._snap = snap
+      @property
+      def snapshot(self) -> Snapshot: return self._snap
+      def publish(self, snap: Snapshot) -> None: self._snap = snap   # atòmic
+
+  Funcions clau:
+    answer(req: dict, snap: Snapshot, rng) -> list[str]
+    score_candidates(cand, rc, snap, rng, sampled=True) -> (p, U)
+    order_slate(cand, p, U, U_mean, snap, cfg, cold) -> list[int]
+    apply_cold_reservation(chosen, cand, p, snap, cfg) -> list[int]
+    on_feedback(rows, snap, mutable_state) -> None
+    on_events(rows, mutable_state) -> None
+    on_catalog(rows, snap, mutable_state) -> Snapshot
+    persist(snap, mutable_state) -> None
+
+  Estat mutable dels workers (no publicat):
+    s_slow, f_slow, s_fast, f_fast, s_click, f_click, s_org, f_org
+    alpha0, beta0, price, active, unavailable, is_new
+    trend_boost, new_bonus, restock_bonus, price_bonus
+    mu_beta, Sigma_beta
+    user_bought, user_clicked, req_meta, seen_feedback, seen_events
+    ring buffers de tendències
+
+6.3 ESQUELET DEL BUCLE PRINCIPAL
+--------------------------------
+  API = os.environ.get("RAWTREE_API_URL", "https://api.rawtree.com")
+  TEAM = os.environ["TEAM_ID"]
+  CFG = Config()
+  RNG = np.random.default_rng(20261115)
+  import queue
+
+  STATE: StateHolder
+  STOP = threading.Event()
+  OUTBOX = queue.Queue(maxsize=2000)
+
+  def request_loop():
+      http = new_session()
+      seen = LRU(ttl=900)
+      while not STOP.is_set():
+          try:
+              rows = query_requests(http)          # SQL 5.7.3
+              fresh = [r for r in rows
+                       if r["request_id"] not in seen]
+              if len(fresh) > 50:                  # backlog: primer les noves
+                  fresh.sort(key=lambda r: parse_ts(r["ts"]), reverse=True)
+                  fresh = fresh[:50]
+              for r in fresh:
+                  rid = r["request_id"]
+                  if rid in seen:
+                      continue
+                  age = now_utc() - parse_ts(r["ts"])
+                  if age > CFG.deadline_ms / 1000.0:
+                      seen.add(rid)
+                      continue                     # massa tard
+                  try:
+                      items = answer(r, STATE.snapshot, RNG)
+                  except Exception as e:
+                      log("answer", rid, e)
+                      continue                     # reintentar al següent cicle
+                  seen.add(rid)
+                  ans = {"request_id": rid,
+                         "items": items,
+                         "model_version": CFG.model_version}
+                  try:
+                      OUTBOX.put_nowait(ans)
+                  except queue.Full:               # descartar el més vell
+                      try: OUTBOX.get_nowait()
+                      except queue.Empty: pass
+                      try: OUTBOX.put_nowait(ans)
+                      except queue.Full: pass
+                  req_meta[rid] = (
+                      r.get("user_id"), bool(r.get("is_new_user")),
+                      is_cold(r), r.get("context"), r["ts"])
+          except Exception as e:
+              log("request_loop", e)
+              time.sleep(0.5)
+          time.sleep(CFG.request_poll_s)
+
+  def push_loop():
+      http = new_session()
+      while not STOP.is_set():
+          batch = []
+          deadline = time.monotonic() + CFG.push_batch_s
+          while len(batch) < 50 and time.monotonic() < deadline:
+              try:
+                  timeout = max(0.01, deadline - time.monotonic())
+                  batch.append(OUTBOX.get(timeout=timeout))
+              except queue.Empty:
+                  break
+          if batch:
+              try:
+                  push_batch(http, batch)
+              except Exception as e:
+                  log("push_loop", e)
+                  # devolver a la cua (mejor esfuerzo; el reconciliador
+                  # de 5.8.4 evita duplicados) y esperar antes de reintentar
+                  for a in reversed(batch):
+                      try: OUTBOX.put_nowait(a)
+                      except queue.Full: break
+                  time.sleep(0.5)
+          time.sleep(0.05)
+
+  def push_batch(http, answers):
+      # validar de nou contra l'estat actual (pot haver canviat)
+      snap = STATE.snapshot
+      valid = []
+      for a in answers:
+          items = repair_if_needed(a["items"], snap)
+          if len(items) == 10:
+              valid.append({**a, "items": items})
+      if valid:
+          n = insert_rows(http, "submissions", valid)
+          if n != len(valid):
+              log("push_mismatch", (n, len(valid)))
+
+  def main():
+      global STATE
+      cfg = Config.from_env()
+      snap, mutable = bootstrap()          # catàleg + scratch + priors
+      STATE = StateHolder(snap)
+      threads = [
+          threading.Thread(target=request_loop, daemon=True),
+          threading.Thread(target=push_loop, daemon=True),
+          threading.Thread(target=feedback_loop, daemon=True),
+          threading.Thread(target=events_loop, daemon=True),
+          threading.Thread(target=catalog_loop, daemon=True),
+          threading.Thread(target=persist_loop, daemon=True),
+          threading.Thread(target=health_loop, daemon=True),
+      ]
+      for t in threads: t.start()
+      try:
+          while True: time.sleep(1)
+      except KeyboardInterrupt:
+          STOP.set()
+          persist(STATE.snapshot, mutable)
+          join_all(threads, timeout=5)
+
+  Nota: el `request_loop` no ha de dependre de cap worker. Si el worker de
+  feedback va lent, la inferència continua amb el snapshot anterior.
+
+6.3.1 Integració amb el starter
+-------------------------------
+El starter té `pull()`, `predict()`, `push()`, `recommend()`. Es poden mantenir
+per compatibilitat:
+  - `pull(seen)` -> query_requests + dedupe (igual que ara, amb la finestra de
+    60 s).
+  - `predict(requests, best, unavailable)` -> per a cada request, cridar
+    `answer(req, STATE.snapshot, RNG)`.
+  - `push(answers)` -> push_batch.
+  - `recommend(recent_views, best, unavailable)` -> wrapper que construeix una
+    petició sintètica i crida `answer()`; serveix per al notebook offline.
+Així `offline_eval.ipynb` segueix important `recommender.py` i avalua el
+mateix codi que corre en línia. Per al notebook, el snapshot s'ha de construir
+amb els priors calculats NOMÉS amb dades anteriors al CUT (no amb l'estat
+live), i el context pot ser el de cada fila del test.
+
+6.3.2 Esquelet dels workers
+---------------------------
+  def feedback_loop():
+      http = new_session()
+      while not STOP.is_set():
+          try:
+              rows = query_feedback(http)      # SQL 5.7.5
+              fresh = [r for r in rows
+                       if r["request_id"] not in seen_feedback]
+              for r in fresh:
+                  seen_feedback.add(r["request_id"])
+                  on_feedback_one(r, mutable)
+              publish_snapshot()
+          except Exception as e:
+              log("feedback_loop", e)
+          time.sleep(CFG.feedback_poll_s)
+
+  def events_loop():
+      http = new_session()
+      while not STOP.is_set():
+          try:
+              rows = query_events(http, mutable.last_event_ts)
+              on_events(rows, mutable)         # ring buffer + dedupe
+              recompute_trends(mutable)        # cada 10 s
+              publish_snapshot()
+          except Exception as e:
+              log("events_loop", e)
+          time.sleep(CFG.events_poll_s)
+
+  def catalog_loop():
+      http = new_session()
+      while not STOP.is_set():
+          try:
+              rows = query_catalog_updates(http, mutable.last_catalog_ts)
+              on_catalog(rows, mutable)        # aplica canvis + publica
+              if time.time() - mutable.last_full_catalog > 60:
+                  reconcile_catalog(http, mutable)
+          except Exception as e:
+              log("catalog_loop", e)
+          time.sleep(CFG.catalog_poll_s)
+
+  def persist_loop():
+      while not STOP.is_set():
+          try:
+              persist(STATE.snapshot, mutable)
+          except Exception as e:
+              log("persist_loop", e)
+          time.sleep(CFG.persist_s)
+
+  def health_loop():
+      while not STOP.is_set():
+          try:
+              update_health_metrics(mutable)
+              maybe_regime_shift(mutable)
+              maybe_circuit_breaker(mutable)
+          except Exception as e:
+              log("health_loop", e)
+          time.sleep(10)
+
+6.4 CONFIGURACIÓ PER DEFECTE
+----------------------------
+  @dataclass
+  class Config:
+      model_version = "v3-bayes-ts"
+      # candidats i ordenació
+      n_candidates = 100
+      lambda_T = 0.8
+      lambda_C = 0.5
+      lambda_price = -0.25
+      lambda_div = 0.20
+      rho = 0.06
+      # exploració
+      explore_slots = 2
+      epsilon_explore = 0.5
+      c_ucb = 0.15
+      c_new = 0.6
+      exploit_slot1 = True
+      # priors
+      ess_max = 5000
+      ess_new = 8
+      kappa_1 = 0.5
+      kappa_2 = 0.5
+      n_max_product_prior = 300
+      k_org = 0.01
+      # decaïment
+      half_life_slow_days = 7
+      half_life_fast_min = 20
+      half_life_hist_days = 21
+      # contextual
+      temperature = 1.0
+      calib_a = 0.0
+      lambda_sigma = 0.97
+      lambda_mu = 0.995
+      # tendències
+      eta_trend = 0.7
+      k_trend = 0.005
+      trend_window_min = 15
+      trend_baseline_min = 180
+      # feedback
+      c_neg_click = 0.05
+      c_neg_purchase = 0.02
+      # operació
+      request_poll_s = 0.25
+      push_batch_s = 0.35
+      feedback_poll_s = 1.5
+      events_poll_s = 10.0
+      catalog_poll_s = 0.75
+      persist_s = 60.0
+      deadline_ms = 2900
+
+Tots aquests valors s'han de validar offline (Secció 7) i ajustar amb el
+leaderboard de pràctica. Els que més impacte tenen: rho, lambda_T, lambda_C,
+temperature, kappa_1/kappa_2, ess_max, eta_trend, c_new, lambda_div.
+
+6.5 TESTS I VALIDACIÓ
+---------------------
+6.5.1 Tests unitaris (sense xarxa)
+----------------------------------
+  - test_parsing: recent_views en 5 formats; context absent; ts invàlid.
+  - test_filter: cap unavailable, cap inactive, cap duplicat, cap comprat.
+  - test_always_10: 10.000 peticions sintètiques amb catàleg aleatori;
+    sempre 10 IDs únics i elegibles.
+  - test_latency: 1.000 crides a answer() amb N=5.000; p99 < 50 ms.
+  - test_beta_update: un feedback de compra apuja μ_i; un no-clic a slot 10
+    gairebé no la baixa; un no-clic a slot 1 la baixa més.
+  - test_new_product: init amb prior de subcategoria, ESS baixa, i apareix
+    al pool d'una petició cold.
+  - test_out_of_stock: marcar unavailable i verificar que no surt a cap
+    answer; back_in_stock el reintrodueix.
+  - test_regime_shift: cridar regime_shift() i comprovar que s_slow es
+    redueix, Σ s'infla i T_eff puja.
+
+6.5.2 Tests d'integració (amb RawTree)
+--------------------------------------
+  - Abans del stream: el bucle no trenca amb taules buides.
+  - Query de catàleg: 5.000 files, totes amb product_id no buit.
+  - Insert a scratch: 2 files, llegir-les i comprovar round-trip.
+  - Push a submissions: 1 answer de prova amb un request_id fictici; verificar
+    que es llegeix i que items té 10.
+  - Simulació de latència: injectar 200 ms a query() i comprovar que el
+    circuit breaker no salta si el total < 1 s.
+
+6.5.3 Test de càrrega
+---------------------
+  - Generar 10.000 peticions sintètiques i executar answer() en un sol fil;
+    mesurar throughput. Objectiu: > 200 answer/s (marge 60x sobre 3/s).
+  - Executar els workers amb dades sintètiques durant 10 min i comprovar que
+    no hi ha leaks ni creixement de memòria.
+
+6.5.4 Checklist de desplegament
+-------------------------------
+  - [ ] .env amb TEAM_ID i RAWTREE_API_KEY (no committejar).
+  - [ ] `python offline_build.py` acaba sense errors i escriu meta a scratch.
+  - [ ] `python starter/recommender.py` arrenca i respon amb taules buides.
+  - [ ] Test de submissions amb un request_id real del stream de pràctica.
+  - [ ] Fallback rate < 1% durant 30 min.
+  - [ ] p99 de latència < 1 s.
+  - [ ] El procés sobreviu a un reinici i carrega l'estat de scratch.
+  - [ ] caffeinate / systemd configurat.
+  - [ ] Logs amb rotació i espai a disc suficient.
+
+================================================================================
+7. AVALUACIÓ OFFLINE I VALIDACIÓ
+================================================================================
+
+7.1 PARTICIPACIÓ TEMPORAL
+-------------------------
+Mai avaluar amb dades del futur filtrant cap al passat. Protocol:
+
+  - Train: dies 1..53 (o tot menys els últims 7).
+  - Validació: dies 54..57 (per triar hiperparàmetres i calibrar T).
+  - Test: dies 58..60 (només una vegada, per reportar).
+  - CUT = data de tall; tot el que és "after CUT" és test.
+  - Per a cold start: simular productes nous com els creats després del CUT
+    (created_at > CUT) i usuaris que no apareixen al train.
+
+El notebook `starter/offline_eval.ipynb` ja fa el tall de 7 dies; reutilitzar
+la mateixa lògica per coherència.
+
+7.2 MÈTRIQUES
+-------------
+7.2.1 Hit rate@10 (ràpida, però esbiaixada)
+-------------------------------------------
+  HR@10 = (1/|C|) Σ_{t∈C} 1{ y_t ∈ S_π(t) }
+
+  on C = impressions amb clic o compra, y_t el producte clicat/comprat.
+  És fàcil de calcular, però afavoreix els populars perquè el log els mostrava
+  més. Servir només per comprovar que el recall no és catastròfic.
+
+7.2.2 IPS del slot 1 (la del notebook)
+--------------------------------------
+  Per a cada impressió on el nostre primer producte coincideix amb el primer
+  del log:
+    w_t = 1 / propensity[0]
+    reward_t = 1{clicked == shown[0]}   (o purchased)
+  ς_IPS = mean(w_t * reward_t)
+  ς_SNIPS = sum(w_t * reward_t) / max(sum(w_t), 1e-9)
+
+  - És l'estimació menys esbiaixada del CTR del slot 1.
+  - El nombre de coincidències sol ser baix (el nostre model no tria el mateix
+    que el log); reportar n_matches al costat. Si n_matches < 1.000, la
+    estimació és massa sorollosa per decidir.
+  - No usar-lo per triar hiperparàmetres amb diferències petites.
+
+7.2.3 IPS per producte i posició
+--------------------------------
+Generalitzem el notebook a tots els slots, amb correcció de posició:
+
+  Per a cada impressió (t, k_old) on y_t = i (compra o clic):
+    si i ∈ S_π(t) a la posició k_new:
+      weight_t = (w_{k_new} / w_{k_old}) / max(e_{t,i,k_old}, e_min)
+    si no:
+      weight_t = 0
+
+  ς_item = mean_t(weight_t * 1{y_t = i})                              (73)
+
+  - El factor w_{k_new}/w_{k_old} ajusta el fet que el nostre slate pot
+    mostrar i en una posició diferent.
+  - Clipping de weight a [0, 20].
+  - Reportar ESS = (Σ weight)^2 / Σ weight^2.
+  - Aquest estimador mesura la probabilitat de compra del producte que el log
+    va comprar, si el nostre sistema l'hagués mostrat. No mesura els
+    productes que el log no va mostrar mai (propensió 0): per a això cal el
+    model-based replay (7.4) o el test en línia.
+
+7.2.4 Cobertura de candidats (recall@100)
+-----------------------------------------
+  Recall@100 = fracció d'impressions on el producte comprat és dins dels 100
+  candidats generats (abans de scoring). Objectiu ≥ 0.95.
+  Si és < 0.90, el problema és la generació de candidats, no el rànquing:
+  calen més fonts o quotes més grans.
+
+7.2.5 Mètriques de diversitat i novetat
+---------------------------------------
+  - Nombre mitjà de subcategories diferents per slate (objectiu 5-8).
+  - Fracció de slots ocupats per productes amb ESS < 50 (exploració).
+  - Fracció de productes nous a l'slate (objectiu 5-15% en règim final).
+  - Gini dels productes mostrats: si és massa alt, el model col·lapsa en pocs
+    productes i perd exploració.
+
+7.3 VALIDACIÓ DELS PRIORS
+-------------------------
+7.3.1 Calibratge de μ_i
+-----------------------
+  - Agrupar μ_i en bins i comparar amb la taxa observada (IPS) al holdout.
+  - Si μ està sistemàticament per sobre, el prior és massa optimista o el
+    clipping de ω infravalora els fracassos.
+  - Si μ està per sota, potser s'han comptat compres orgàniques com a
+    impressions del carrusel.
+
+7.3.2 Estabilitat de la jerarquia
+---------------------------------
+  - Comparar μ_i amb la mitjana de la subcategoria: la diferència ha de ser
+    raonable (no tots els productes iguals, ni tots extrems).
+  - Comprovar que els productes amb ESS baix estan a prop del prior i que els
+    d'ESS alt s'han mogut cap a la seva taxa observada.
+  - Si κ_1 o κ_2 són massa grans, tots els productes d'una subcategoria
+    semblen iguals; si són massa petits, el prior no ajuda en cold start.
+
+7.3.3 Transicions
+-----------------
+  - Avaluar P(i|j) amb una validació de link prediction: per a cada sessió
+    del holdout, amagar l'últim producte i veure si és al top-k de τ.
+  - Hit@20 de transició objectiu > 0.25 (el senyal és sorollós; no esperar
+    més).
+  - Comprovar que les files sumen 1 i que no hi ha NaN.
+
+7.3.4 Biaix de posició
+----------------------
+  - Comparar CTR per slot observat amb w_k * r̄; error relatiu < 15%.
+  - Si w_2/w_1 > 0.9, no aprendre w i usar els valors per defecte.
+
+7.4 REPLAY BASAT EN MODEL (model-based)
+---------------------------------------
+Com que no tenim el simulador ocult, construïm un substitut per comparar
+polítiques:
+
+  1. Entrenar un model de compra (el mateix conditional logit o un gradient
+     boosting simple) amb el train.
+  2. Per a cada petició del test, generar el slate de cada política.
+  3. Calcular:
+       E[compres | S] = Σ_k w_k * p̂_{t,i_k}
+       E[revenue | S] = Σ_k w_k * p̂_{t,i_k} * price_{i_k}
+  4. Comparar baseline vs model vs ablacions (sense transitions, sense
+     context, sense trends).
+
+Advertiment: si el model substitut està mal calibrat, afavorirà la política
+que s'hi assembla. Per això:
+  - Calibrar el substitut amb un holdout independent.
+  - Reportar també les mètriques IPS (7.2).
+  - No prendre decisions basades només en el replay; usar-lo per descartar
+    configuracions dolentes, no per triar el guanyador per dècimes.
+
+7.5 CERCA D'HIPERPARÀMETRES
+---------------------------
+  - Espai: rho ∈ {0, 0.02, 0.04, 0.06, 0.08, 0.10}, lambda_T ∈ {0, 0.4, 0.8,
+    1.2}, lambda_C ∈ {0, 0.25, 0.5, 0.8}, temperature ∈ {0.8, 1.0, 1.2},
+    kappa_1/2 ∈ {0.3, 0.5, 0.8}, ess_max ∈ {500, 2000, 5000}, eta_trend ∈
+    {0.3, 0.7, 1.0}, lambda_div ∈ {0, 0.1, 0.2, 0.3}, c_new ∈ {0.3, 0.6,
+    1.0}.
+  - Mètode: random search de 50-100 combinacions sobre validació, no grid
+    complet (massa combinacions).
+  - Criteri: 0.7 * HR@10 + 0.3 * IPS_item, amb penalització si recall@100 <
+    0.95 o latència p99 > 50 ms.
+  - Un cop triat, congelar i no tocar durant la ronda final; l'adaptació
+    online ja ajusta el que cal.
+
+7.6 CRITERIS D'ACCEPTACIÓ ABANS DE DISSABTE
+-------------------------------------------
+  - [ ] HR@10 del model > baseline en validació (mínim +5% relatiu).
+  - [ ] IPS_item del model > baseline (amb ESS suficient).
+  - [ ] Recall@100 ≥ 0.95.
+  - [ ] ECE < 0.03.
+  - [ ] p99 de answer() < 50 ms.
+  - [ ] 10.000 peticions sintètiques: 100% amb 10 IDs vàlids.
+  - [ ] Cold start: HR@10 en el subconjunt cold > baseline.
+  - [ ] Cap NaN a α, β, Σ, μ.
+  - [ ] El sistema arrenca des de scratch en < 5 s (o < 30 s si recalcula).
+
+================================================================================
+8. RUNBOOK DEL DIUMENGE (CANVI DE RÈGIM)
+================================================================================
+
+Tots els horaris en UTC; entre parèntesis, CET (UTC+1).
+
+8.1 DISSABTE AL MATÍ (ABANS DE LES 10:00 CET)
+---------------------------------------------
+  1. Copiar .env.example a .env i posar TEAM_ID i RAWTREE_API_KEY.
+  2. `pip install -r starter/requirements.txt`.
+  3. Executar `python offline_build.py`:
+     - descarrega catàleg i agregats,
+     - construeix priors, transicions, embeddings, w_k,
+     - escriu un snapshot complet a team_NN.scratch,
+     - desa una còpia local .npz.
+  4. Verificar a scratch: meta + chunks + context.
+  5. Executar els tests offline (`python -m pytest starter/tests -q` o
+     l'equivalent amb asserts).
+  6. Arrencar el sistema amb `caffeinate -dimsu python starter/recommender.py`
+     i comprovar que no trenca amb taules buides.
+
+8.2 DISSABTE DURANT LA PRÀCTICA
+-------------------------------
+  - Deixar córrer el sistema; no tocar el codi si no és imprescindible.
+  - Cada 30 min, consultar:
+      * fallback_rate i fallback_reason (5.8.2),
+      * conversió per hora (5.8.1),
+      * latència p99,
+      * fracció de productes nous.
+  - Si el fallback rate > 1%, investigar abans de canviar res.
+  - Si la conversió és molt pitjor que el baseline, provar una configuració
+    més conservadora (menys exploració, menys diversitat, més prior) en un
+    procés de staging, no en el de producció.
+  - A la nit, deixar el sistema corrent. El stream continua 24 h.
+
+8.3 DIUMENGE 07:30-08:30 UTC (08:30-09:30 CET)
+----------------------------------------------
+  1. Comprovar que el procés és viu i que el feedback arriba.
+  2. Refrescar el snapshot complet a scratch (per si de cas).
+  3. Verificar que l'estat local té els comptes actualitzats.
+  4. Revisar logs de les últimes 12 h: errors, reintents, pics de latència.
+  5. Confirmar que el rellotge està sincronitzat (offset < 1 s).
+  6. Confirmar que la màquina no s'adorm (caffeinate actiu, bateria/endoll).
+  7. Fer un test d'insert a submissions amb un request_id de pràctica (si el
+     stream encara és actiu) i verificar que es llegeix.
+
+8.4 DIUMENGE 08:45 UTC (09:45 CET): CONGELACIÓ
+----------------------------------------------
+  - No desplegar codi nou.
+  - No canviar hiperparàmetres manualment.
+  - Confirmar:
+      * circuit breaker en NORMAL,
+      * fallback rate < 0.5% en els últims 30 min,
+      * p99 < 1 s,
+      * memòria < 500 MB,
+      * connexió estable.
+  - Deixar el sistema en mode automàtic.
+
+8.5 DIUMENGE 09:00 UTC (10:00 CET): CANVI DE RÈGIM
+--------------------------------------------------
+  - El flag de rellotge activa regime_shift() automàticament.
+  - Verificar als logs:
+      * "regime_shift: fast buffer active",
+      * s_slow reduït,
+      * Σ reinflada,
+      * T_eff i exploració pujades.
+  - No cal fer res més. El sistema ha de continuar responent.
+  - Si el flag no s'activa (bug de rellotge), executar manualment la funció
+    via un endpoint local o reiniciar amb la variable REGIME=final.
+
+8.6 DIUMENGE 09:00-11:00 UTC: MONITORATGE
+-----------------------------------------
+  Cada 5 min:
+    - fallback rate (ha de ser ~0),
+    - conversió team vs baseline,
+    - fracció de cold requests i de productes nous a l'slate,
+    - latència p99,
+    - estat del circuit breaker.
+  Senyals d'alarma:
+    - fallback rate > 1%: revisar estoc, queries, latència.
+    - conversió cau > 30% durant 15 min: pujar exploració o revisar
+      tendències.
+    - productes nous a l'slate < 2%: pujar c_new o revisar el pool cold.
+    - p99 > 1.5 s: reduir candidats, desactivar refit, mode DEGRADED.
+  No reiniciar el procés si no és imprescindible: cada reinici perd 1-2 min
+  de feedback i pot provocar fallbacks.
+
+8.7 DIUMENGE 11:00 UTC (12:00 CET): FINAL
+-----------------------------------------
+  - El stream s'atura i el rànquing final apareix sol.
+  - No cal enviar res.
+  - Desar un checkpoint final i els logs.
+  - Fer un resum de mètriques per a la presentació:
+      * conversió per hora i per servei,
+      * fallback rate,
+      * latència,
+      * fracció de cold start,
+      * comparació amb baseline i reference,
+      * ablacions (si s'han pogut mesurar).
+
+8.8 COMANDES ÚTILS
+------------------
+  # Consulta ràpida de salut
+  rtree query --api-key $RAWTREE_API_KEY --database $TEAM_ID \
+    "SELECT fallback_reason::String, count() FROM team_NN.feedback
+     WHERE request_id != '__init__' AND ts > now() - INTERVAL 15 MINUTE
+     GROUP BY fallback_reason"
+
+  # Conversió de l'última hora
+  rtree query --api-key $RAWTREE_API_KEY --database $TEAM_ID \
+    "SELECT 100 * countIf(purchased != '') / count() AS cvr
+     FROM team_NN.feedback
+     WHERE request_id != '__init__' AND ts > now() - INTERVAL 1 HOUR"
+
+  # Mantenir el Mac despert
+  caffeinate -dimsu python starter/recommender.py
+
+  # Reinici automàtic simple
+  while true; do caffeinate -dimsu python starter/recommender.py; sleep 2; done
+
+================================================================================
+9. RISCOS, FALLBACKS I PLA B
+================================================================================
+
+  Risc                               Prob.  Impacte  Mitigació
+  ------------------------------------------------------------------------------
+  Out-of-stock a l'slate             Mitjà  Crític   Tombstone immediat +
+                                                     revalidació abans del push +
+                                                     snapshot cada 60 s.
+  Answer tardana (>3 s)              Baix   Alt      p99 < 500 ms; batching;
+                                                     deadline guard 2.9 s; no
+                                                     consultes pesades al camí.
+  Latència de l'API RawTree          Mitjà  Alt      Timeouts curts; estat local;
+                                                     circuit breaker; reintents.
+  Caiguda de xarxa                   Baix   Crític   Supervisor + reintents;
+                                                     caffeinate; estat local.
+  Submissió duplicada                Baix   Baix     LRU submitted; reconciliació
+                                                     per request_id.
+  NaN o divergència del model        Baix   Alt      Guards numèrics; reiniciar
+                                                     Σ a Σ_0; test_NaN.
+  Catalog_updates perduts            Baix   Alt      Reconciliació completa cada
+                                                     60 s; consulta 5.8.5.
+  Producte nou sense descripció      Mitjà  Mitjà    Fallback a subcategoria +
+                                                     marca; no forçar-lo.
+  Cold start pitjor que baseline     Mitjà  Mitjà    Contingut + subcategoria +
+                                                     exploració; validar offline.
+  Tendència falsa (soroll)           Mitjà  Mitjà    Gate per recompte mínim;
+                                                     shrinkage jeràrquic; cap
+                                                     boost ±0.8.
+  Feedback retardat o incomplet      Mitjà  Baix     Finestra 10 min + dedupe;
+                                                     no bloquejar la inferència.
+  Deriva del model contextual        Mitjà  Mitjà    ADF + refit cada 30 min +
+                                                     reinjecció de variància.
+  Data types inesperats (Dynamic)    Mitjà  Baix     Casts defensius; toString;
+                                                     toFloat64OrZero; try/except.
+  Consulta > 30 s                    Mitjà  Mitjà    Particionar per hash;
+                                                     executar offline.
+  Massa exploració -> menys conversió Mitjà Mitjà    Slots 9-10; annealing;
+                                                     circuit breaker; config.
+  Massa explotació -> cold start fluix Baix Mitjà    ε_explore 0.5; c_new;
+                                                     reserva de slots cold.
+  Preu mal interpretat               Baix   Baix     ρ petit; feature de preu
+                                                     relatiu; validar offline.
+  Bateria/portàtil s'adorm           Baix   Crític   caffeinate; endoll; supervisor.
+  Disc ple per logs                  Baix   Mitjà    Rotació; límits de mida.
+  Rellotge desincronitzat            Baix   Alt      Offset del servidor; NTP;
+                                                     alarmes.
+
+9.1 PLA B SI EL MODEL COMPLEX FALLA
+-----------------------------------
+  Nivell 0: best_safe (baseline) -> reliability 100%, conversió baseline.
+  Nivell 1: priors + transicions, sense contextual ni tendències.
+  Nivell 2: model complet sense exploració (slots 9-10 per U pur).
+  Nivell 3: model complet amb exploració.
+El circuit breaker ha de baixar de nivell automàticament, no cal intervenció.
+
+9.2 PLA B SI EL STREAM CANVIA MÉS DEL PREVIST
+---------------------------------------------
+  - Si la conversió cau molt i el CUSUM no ha saltat, activar regime_shift()
+    manualment.
+  - Si els productes nous són majoria i no tenen text, prior de subcategoria
+    + marca; pujar c_new.
+  - Si les tendències són erràtiques, baixar η_T a 0.3 i K_T a 0.001.
+  - Si el model contextual divergeix, congelar β (no ADF) i usar només els
+    priors fins que es recuperi.
+
+9.3 QUÈ EXPLICAR AL JURAT
+-------------------------
+  - Per què IPS: sense corregir el biaix del log, el model aprèn a ser un
+    best-seller; amb IPS, aprèn qualitat.
+  - Per què jerarquia: 5.000 productes amb poques impressions cadascun;
+    compartir informació per subcategoria és el que fa possible el cold start.
+  - Per què Thompson: explora proporcionalment a la incertesa i no malgasta
+    visibilitat; els slots 9-10 concentren l'exploració barata.
+  - Per què ordre: w_k decreixent; la desigualtat de reordenació demostra que
+    ordenar per probabilitat és òptim.
+  - Per què dual timescale: el món canvia; el buffer fast s'adapta en minuts,
+    el slow manté l'estabilitat.
+  - Per què reliability primer: una answer invàlida val 0 i embruta el
+    feedback; el circuit breaker i la validació són part del model.
+
+9.4 QUÈ MESURAR PER A LA PRESENTACIÓ
+------------------------------------
+  - Conversió per 100 peticions: baseline vs model vs reference (si es pot).
+  - Cold start: conversió en peticions cold.
+  - Reliability: % d'answers vàlides i a temps.
+  - Latència p50/p95/p99.
+  - Revenue per petició.
+  - Ablacions: sense IPS, sense transicions, sense contingut, sense
+    tendències, sense contextual, sense exploració. Cada ablació ha de tenir
+    una mètrica i una explicació.
+  - Corba d'aprenentatge: conversió per hora durant la pràctica.
+  - Exemples qualitatius: una petició amb views de cafetera i el slate
+    resultant; una petició cold amb producte nou.
+
+================================================================================
+10. CHECKLIST D'IMPLEMENTACIÓ
+================================================================================
+
+FASE 0 — DADES
+  [ ] Carregar catàleg amb 5.000 productes i 90 subcategories.
+  [ ] Verificar que product_id és únic i no buit.
+  [ ] Verificar que price_eur > 0 i is_active és booleà.
+  [ ] Construir index product_id -> idx.
+
+FASE 1 — PRIORS OFFLINE
+  [ ] SQL 5.4.1 (IPS per producte/slot) i 5.4.2 (posició).
+  [ ] SQL 5.4.3 (jerarquia) amb ROLLUP.
+  [ ] SQL 5.5.1 (orgànics) i 5.5.2 (subcategoria).
+  [ ] SQL 5.6.1/5.6.2 (co-visita i co-compra).
+  [ ] w_k per EM + PAVA.
+  [ ] Embeddings TF-IDF hashed (D=512).
+  [ ] Conditional logit + Laplace; calibratge T, a.
+  [ ] Beta jeràrquic + orgànics + fast/slow.
+  [ ] Matriu de transició top-200 + CSR.
+  [ ] Escriure snapshot a scratch i .npz local.
+
+FASE 2 — INFERÈNCIA
+  [ ] Parsing defensiu de recent_views/context.
+  [ ] Filtre dur (active, unavailable, bought, price).
+  [ ] Generació de 100 candidats amb quotes.
+  [ ] Thompson Sampling (Beta + β).
+  [ ] Utilitat amb preu.
+  [ ] Ordenació amb MMR/quotes/exploració.
+  [ ] Validació final i reparació.
+  [ ] answer() < 50 ms p99.
+
+FASE 3 — WORKERS
+  [ ] feedback_loop + actualització amb w_k.
+  [ ] ADF contextual + reinjecció de variància.
+  [ ] events_loop + ring buffer + tendències.
+  [ ] CUSUM + regime_shift.
+  [ ] catalog_loop + new/price/stock.
+  [ ] persist_loop + càrrega en reinici.
+  [ ] health_loop + circuit breaker.
+
+FASE 4 — OPERACIÓ
+  [ ] Batching de submissions cada 0.3-0.4 s.
+  [ ] Deadline guard 2.9 s.
+  [ ] Dedupe i reconciliació.
+  [ ] Logs amb rotació.
+  [ ] caffeinate/systemd.
+  [ ] Runbook imprès i a mà.
+
+FASE 5 — VALIDACIÓ
+  [ ] Tests unitaris i d'integració.
+  [ ] Test de càrrega (10.000 peticions).
+  [ ] Avaluació offline (HR@10, IPS, recall@100, ECE).
+  [ ] Cold start offline.
+  [ ] Assaig general amb stream de pràctica.
+
+================================================================================
+APÈNDIX A. TAULA DE SÍMBOLS
+================================================================================
+
+  Símbol            Significat
+  ------------------------------------------------------------------------------
+  N                 nombre de productes (~5.000)
+  t                 petició / impressió
+  u(t)              usuari
+  c(i),s(i),b(i)    categoria, subcategoria, marca
+  k                 slot 1..10
+  S_t               slate mostrat pel sistema antic
+  e_{t,i,k}         propensity del log (prob. condicional)
+  w_k               probabilitat d'examinar el slot k
+  y^C_t, y^P_t      producte clicat / comprat
+  r_t               revenue de la petició
+  α_i, β_i          pseudo-comptes Beta de compra
+  α^C_i, β^C_i      pseudo-comptes Beta de clic
+  μ_i               α_i/(α_i+β_i)
+  s_i, f_i          èxits i fracassos IPS (compra)
+  s^C_i, f^C_i      èxits i fracassos de clic
+  s^org_i, f^org_i  èxits i fracassos orgànics
+  s^slow/fast       evidència acumulada per timescale
+  ω                 pes IPS
+  ESS               mida efectiva de mostra
+  z_{t,i}           features contextuals (d ≤ 32)
+  β                 coeficients logístics
+  μ_β, Σ_β          posterior Laplace
+  η                 predictor logit
+  p_{t,i}           probabilitat de compra
+  U_{t,i}           utilitat (compra + preu)
+  T_{ji}            transició P(i|j)
+  n_{ji}, m_{ji}    comptes i massa prior de la transició
+  τ_{t,i}           score de transició de la sessió
+  b^{tr}_i          boost de tendència
+  b^{new}_i         bonus de producte nou
+  b^{restock}_i     bonus de back_in_stock
+  γ                 factor de decaïment
+  λ                 pesos (T, C, price, div, etc.)
+  ρ                 recency o pes de preu (segons context)
+  κ                 forces de shrinkage
+  T                 temperatura de calibratge (no confondre amb transició)
+  a                 intercept de calibratge
+
+Nota: T s'usa per a la temperatura i T_{ji} per a la transició; el context
+fa evident de quin es tracta. Si es prefereix, reanomenar la temperatura a
+`tau_cal` al codi.
+
+================================================================================
+APÈNDIX B. HIPERPARÀMETRES PER DEFECTE
+================================================================================
+
+  Nom                   Valor     Rang          Efecte
+  ------------------------------------------------------------------------------
+  n_candidates          100       80-120        recall vs latència
+  lambda_T              0.8       0-1.5         pes de la transició
+  lambda_C              0.5       0-1.0         pes del contingut
+  lambda_price          -0.25     -0.5..0       pes del preu relatiu
+  lambda_div            0.20      0-0.35        diversitat (MMR)
+  rho                   0.06      0.02-0.15     tie-breaker d'ingressos
+  epsilon_explore       0.5       0.3-0.7       prob. d'explorar slots 9-10
+  c_ucb                 0.15      0.05-0.3      bonus d'incertesa
+  c_new                 0.6       0.3-1.0       bonus de producte nou
+  ess_max               5000      500-5000      límit d'evidència
+  ess_new               8         5-20          incertesa inicial nou producte
+  kappa_1               0.5       0.3-0.8       shrinkage categoria
+  kappa_2               0.5       0.3-0.8       shrinkage subcategoria
+  n_max_product_prior   300       100-500       força màxima del prior
+  k_org                 0.01      0.001-0.05    pes dels senyals orgànics
+  half_life_slow_days   7         3-14          memòria lenta
+  half_life_fast_min    20        10-60         memòria ràpida (règim final)
+  half_life_hist_days   21        14-30         decaïment dels priors offline
+  temperature           1.0       0.8-1.2       calibratge
+  calib_a               0.0       -0.5..0.5     intercept de calibratge
+  lambda_sigma          0.97      0.9-0.99      reinjecció de variància
+  lambda_mu             0.995     0.99-0.999    forgetting de la mitjana
+  eta_trend             0.7       0.3-1.0       pes del boost de tendència
+  k_trend               0.005     0.001-0.02    pseudo-comptes de tendència
+  c_neg_click           0.05      0.01-0.1      evidència negativa de no-clic
+  c_neg_purchase        0.02      0.01-0.05     evidència negativa de no-compra
+  request_poll_s        0.25      0.2-0.5       freqüència de pull
+  push_batch_s          0.35      0.3-0.5       freqüència de push
+  feedback_poll_s       1.5       1-3           freqüència de feedback
+  events_poll_s         10        5-20          freqüència d'events
+  catalog_poll_s        0.75      0.5-1.0       freqüència de catàleg
+  persist_s             60        30-120        freqüència de checkpoint
+  deadline_ms           2900      2500-2950     descartar peticions massa velles
+
+B.1 COM TRIAR ELS MÉS IMPORTANTS
+--------------------------------
+  - Si la conversió és baixa i el recall és alt: pujar lambda_T i lambda_C,
+    baixar lambda_div i rho, baixar epsilon_explore.
+  - Si el cold start és baix: pujar c_new, pujar ess_new, pujar epsilon_explore,
+    assegurar que el contingut pesa (lambda_C).
+  - Si el model és inestable: baixar lambda_sigma (més forgetting) o congelar
+    β; pujar kappa_1/2 (més shrinkage).
+  - Si les tendències són sorolloses: baixar eta_trend i k_trend.
+  - Si el fallback és alt: no tocar el model; revisar latència, estoc i xarxa.
+
+================================================================================
+APÈNDIX C. RESUM DE FÒRMULES
+================================================================================
+
+  C.1 Priors i comptes
+  --------------------
+  (1)  ω_{t,i,k} = 1 / (max(e,e_min) * max(w_k,w_min)), clip ω_max
+  (2)  s_i = Σ 1{i mostrat} 1{y^P=i} ω
+  (3)  f_i = Σ 1{i mostrat} (1 - 1{y^P=i}) ω
+  (4)  θ̂_i = (s_i + α_{i,0}) / (s_i + f_i + α_{i,0} + β_{i,0})
+  (5)  ESS_i = (Σω)^2 / Σω^2
+  (6)  d(ts) = 0.5^((T-ts)/H_hist)
+  (7)  m_g = Σ n_i θ̂_i / Σ n_i
+  (8)  v_g = Σ n_i (θ̂_i - m_g)^2 / Σ n_i
+  (9)  τ_g = m_g(1-m_g)/v_g - 1
+  (10) α_g = m_g τ_g; β_g = (1-m_g) τ_g
+  (11) α_c = A_G + κ_1 n_c m_c; β_c = B_G + κ_1 n_c (1-m_c)
+  (12) α_s = α_c + κ_2 n_s m_s; β_s = β_c + κ_2 n_s (1-m_s)
+  (13) κ_3 = min(1, N_max/(α_s+β_s)); α_{i,0}=κ_3 α_s; β_{i,0}=κ_3 β_s
+  (14) α_i = α_{i,0}+s_slow+s_fast+s_org; β_i = β_{i,0}+f_slow+f_fast+f_org
+  (15) V_i, A_i, P_i = sumes decaïdes de view, add_to_cart, purchase
+  (16) q_i = clip((P_i + a_s m_s)/(V_i + a_s), 0, 1)
+  (17) n_i^org = K_org (V_i + 5 A_i)
+  (18) s_i^org = n_i^org q_i; f_i^org = n_i^org (1-q_i)
+
+  C.2 Transicions
+  ---------------
+  (19) α_{ji} = n_{ji} + m_{ji}
+  (20) P(i|j) = (n_{ji}+m_{ji})/(n_j+m_j)
+  (21) n_{ji} = λ_v C^view + λ_a C^cart + λ_p C^buy
+  (22) m_{ji} = M_0 [λ_sub 1{sub} + λ_brand 1{brand} + λ_cat 1{cat}
+                    + λ_sem cos^2] / Z_j
+  (23) τ_{t,i} = Σ_r ρ^{m-r} P(i|v_r)
+
+  C.3 Context i posició
+  ---------------------
+  (24) η_{t,i} = offset_i + z_{t,i}^T β
+  (25) offset_i = logit(clip(μ_i))
+  (26) p_{t,i} = softmax_{j∈S_t}(η_{t,j})_i
+  (27) P(compra i) = P(alguna compra) * p_{t,i}
+  (28) c_t = Σ ρ^{m-r} e_{v_r} / norma
+  (29) log posterior = conditional logit + prior N(0,Σ_0)
+  (30) Σ_β = H^{-1}; β_MAP per Newton
+  (31) P(clic|i,k) = w_k r_i
+  (32) P_any = 1 - Π(1-μ_j)
+  (33) p_{t,i} = P_any * softmax_i
+  (34) η = a + (offset + z^Tβ)/T
+  (35) elegible(i) = active & !unavailable & price>0 & !bought
+
+  C.4 Scoring
+  -----------
+  (36) μ̃_i ~ Beta(α_i,β_i)
+  (37) β̃ ~ N(μ_β,Σ_β)
+  (38) η̃ = a + (logit(μ̃) + z^Tβ̃ + λ_T log1p(τ) + λ_C cos
+                + λ_price f_price + b_tr + b_new + b_restock + b_price
+                - pen_same - pen_click)/T
+  (39) p̃ = σ(η̃)
+  (40) q_i = clip(log1p(price)/log1p(P95),0,1)
+  (41) U_i = p̃_i (1 + ρ q_i)
+  (42) E[revenue|S] = Σ w_k p_k price_k
+  (43) E[purchases|S] = Σ w_k p_k
+
+  C.5 Online
+  ----------
+  (44) score MMR = U_i (1 - λ_div max cos)
+  (45) cold = is_new_user or new_product in recent_views
+  (46) p = σ(offset + z^Tμ_β)
+  (47) s = ω p(1-p)
+  (48) Σ_new = Σ - s Σzz^TΣ/(1+s z^TΣz)
+  (49) μ_new = μ + Σ_new z ω(y-p)
+  (50) Σ ← λ_Σ Σ + (1-λ_Σ)Σ_0
+  (51) μ ← λ_μ μ + (1-λ_μ)μ_0
+  (52) m_s = (P180_s+1)/(V180_s+50)
+  (53) λ_base = (P180 + κ_t m_s)/(V180 + κ_t)
+  (54) λ_now = (P15 + κ_t λ_base)/(V15 + κ_t)
+  (55) L = λ_now/λ_base
+  (56) s = P15 + 0.25 A15; e = (P180 + 0.25 A180)/12
+  (57) L_comb = (s+1)/(e+1)
+  (58) z = (P15 - λ_base V15)/sqrt(λ_base V15 + 1)
+  (59) L_sub = (s_sub+1)/(e_sub+1)
+  (60) L_shrunk = (n L_comb + κ_s L_sub)/(n+κ_s)
+  (61) gate = clip((P15+0.25 A15)/3,0,1)
+  (62) b_tr = η_T tanh(log(clip(L_shrunk,0.25,8))) gate
+  (63) n_tr = K_T (V15 + 4 A15)
+  (64) s_fast += n_tr p_tr; f_fast += n_tr(1-p_tr)
+  (65) b_tr ← b_tr 0.5^(Δt/600)
+  (66) CUSUM: g_t = max(0, g_{t-1} + (r_ref - r_t) - δ)
+  (67) μ_prior = 0.45 μ_knn + 0.30 μ_sub + 0.15 μ_brand + 0.10 μ_glob
+  (68) ESS_new = 8 (6 en règim final)
+  (69) b_new = c_new / sqrt(ESS+1)
+  (70) T_fallback(j,new) = m_{j,new}/m_j
+  (71) b_price = clip(-ε_p log(price_new/price_old), -0.4, 0.4)
+  (72) b_restock = 0.15 (half-life 1 h)
+  (73) IPS item = mean(weight * 1{y=i})
+
+  C.6 Ordre de complexitat
+  ------------------------
+  - answer(): O(C*d + C*D + 10*C*D), C=100, d=28, D=512 -> < 5 ms.
+  - feedback per fila: O(10 + d^2) amb d=28 -> ~1.000 ops.
+  - events per lot: O(files) + O(N) per recalcul de sumes.
+  - catalog per lot: O(files) + O(25*200) per producte nou.
+  - persist: O(N) per construir chunks; O(17 MB) cada 60 min.
+
+
