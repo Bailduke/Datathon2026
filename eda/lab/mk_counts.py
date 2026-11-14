@@ -1,9 +1,9 @@
-"""Variante 'recuentos': N = 0·compras + 1·carrito + 0,1·vistas, kappa_c = 5, lam_cat = 0,5. Crea eda/lab/.cache_counts/
+"""Variante 'recuentos': N = 0·compras + 1·carrito + 0,1·vistas, kappa_c = 5, lam_cat = 0,5. Crea eda/lab/.cache/counts/
 con su propio priors_live.pkl y lanza la calibración en seco para comparar la previsión con la variante actual."""
 import shutil, sys, numpy as np
 from pathlib import Path
 from lab import *
-W = (0.0, 1.0, 0.1); D = Path(HERE) / ".cache_counts"; D.mkdir(exist_ok=True)
+W = (0.0, 1.0, 0.1); D = Path(HERE) / ".cache" / "counts"; D.mkdir(exist_ok=True)
 P = load_P(); index = {p: i for i, p in enumerate(P["ids"])}; sub = np.asarray(P["sub"]); urow = {u: k for k, u in enumerate(P["users"])}
 baskets = pickle.load(open(os.path.join(HERE, "../scripts/.cache/baskets.pkl"), "rb")); hv = pickle.load(open(os.path.join(C, "hist_views.pkl"), "rb"))
 N = np.zeros(P["N"].shape, np.float64)

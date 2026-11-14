@@ -97,11 +97,12 @@ $d_i$ & Vale 1 si el producto está rebajado.\\
 $\beta_{\text{pop}}$, $\beta_0$, $\beta_u$, $\beta_{\text{dev}}$, $\beta_{\text{reg}}$, $\beta_{\text{sale}}$ &
 Coeficientes de la popularidad, del precio, del perfil de precio, del dispositivo, de la región y de la rebaja.\\[0.3em]
 \multicolumn{2}{@{}l}{\emph{Afinidad}}\\
-$\mathcal Q_g$; $\gamma_g$ & Clase de afinidad $g$ (carrito de hoy, carrito histórico, último visto, visto antes); su coeficiente.\\
+$\mathcal Q_{\text{hoy}}$, $\mathcal Q_{\text{hist}}$, $\mathcal Q_{\text{últ}}$, $\mathcal Q_{\text{ant}}$ & Clases de afinidad: productos en el carrito de hoy, en el carrito histórico, el último visto y los vistos antes en la sesión.\\
+$\gamma_{\text{hoy}}$, $\gamma_{\text{hist}}$, $\gamma_{\text{últ}}$, $\gamma_{\text{ant}}$ & Coeficiente de cada clase.\\
 $\delta$ & Cuánto se atenúa el contexto para un producto del carrito de hoy.\\
 $b$; $B_b(u)$ & Una de las cuatro cestas (historia, sesión, carrito de hoy, vistas de hoy); los productos de $u$ en ella.\\
-$K$; $\tau(i)$ & Número de etiquetas distintas (20); las dos etiquetas del producto $i$.\\
-$\nu_{b,l}$; $\hat\phi_{b,l}$ & Productos de la cesta $b$ que llevan la etiqueta $l$; cuota estimada de esa etiqueta en el perfil del usuario.\\
+$K$ & Número de etiquetas distintas (20); cada producto lleva dos.\\
+$\nu_1$, $\nu_2$ & Productos de la cesta que llevan la primera y la segunda etiqueta del producto que se puntúa.\\
 $a_0$ & Fuerza de la prior uniforme del perfil de etiquetas.\\
 $T_b(u,i)$; $\alpha_b$ & Puntuación de etiquetas del producto $i$ con la cesta $b$; su peso.\\
 $M_{ij}$, $M_i$; $N$ & Cestas históricas que contienen $i$ y $j$ a la vez, y las que contienen $i$; número de cestas.\\
@@ -293,23 +294,38 @@ Hay señales que hablan de un producto concreto y no de su subcategoría. Dentro
 podrían redistribuir la probabilidad entre los productos de una misma subcategoría; los datos piden que
 multipliquen la probabilidad completa (sección~\ref{sec:poisson}):
 \begin{equation}
-\log A_t(u,i)=\sum_{g}\gamma_g\,\mathbf 1[i\in\mathcal Q_g]
--\delta\,\mathbf 1[i\in\mathcal Q_{\text{hoy}}]\log\frac{h_t(i)}{h_0}
-+\sum_{b}\big(\alpha_b\,T_b(u,i)+\eta_b\,G_b(u,i)\big). \label{eq:afinidad}
+\begin{aligned}
+\log A_t(u,i)={}&\gamma_{\text{hoy}}\,\mathbf 1[i\in\mathcal Q_{\text{hoy}}]
++\gamma_{\text{hist}}\,\mathbf 1[i\in\mathcal Q_{\text{hist}}]
++\gamma_{\text{últ}}\,\mathbf 1[i\in\mathcal Q_{\text{últ}}]
++\gamma_{\text{ant}}\,\mathbf 1[i\in\mathcal Q_{\text{ant}}]\\
+&-\delta\,\mathbf 1[i\in\mathcal Q_{\text{hoy}}]\log\frac{h_t(i)}{h_0}
++\sum_{b}\big(\alpha_b\,T_b(u,i)+\eta_b\,G_b(u,i)\big).
+\end{aligned}\label{eq:afinidad}
 \end{equation}
 Tiene tres partes: las clases a las que pertenece el producto, una corrección para el carrito de hoy y
 los gustos latentes del usuario. Se explican por orden.
 
-\paragraph{Clases $\mathcal Q_g$ y coeficientes $\gamma_g$.} $g$ recorre cuatro clases de productos,
-definidas para este usuario y esta petición; $\gamma_g$ es el coeficiente de cada una (pertenecer a la
-clase multiplica la probabilidad por $e^{\gamma_g}$):
-\begin{itemize}\setlength{\itemsep}{0.1em}
-\item \emph{carrito de hoy} ($\mathcal Q_{\text{hoy}}$): el usuario lo ha metido en el carrito durante el
-\emph{stream} y no lo ha comprado;
-\item \emph{carrito histórico}: lo metió en los 60 días anteriores y no lo ha comprado;
-\item \emph{último visto}: es $v_{t,m}$;
-\item \emph{visto antes}: es alguno de $v_{t,1},\dots,v_{t,m-1}$.
-\end{itemize}
+\paragraph{Clases $\mathcal Q$ y coeficientes $\gamma$.} Una clase es un conjunto de productos, definido
+para este usuario y esta petición. Hay cuatro, cada una con su coeficiente; $\mathbf 1[i\in\mathcal Q]$
+vale 1 si el producto $i$ está en la clase y 0 si no, de modo que pertenecer a ella multiplica la
+probabilidad por $e^{\gamma}$:
+
+\begin{center}
+\begin{tabular}{llp{9.2cm}}
+\toprule
+Clase & Coeficiente & Productos que contiene\\
+\midrule
+$\mathcal Q_{\text{hoy}}$ & $\gamma_{\text{hoy}}$ & \emph{Carrito de hoy}: los que el usuario ha metido en el carrito durante el \emph{stream} y no ha comprado.\\
+$\mathcal Q_{\text{hist}}$ & $\gamma_{\text{hist}}$ & \emph{Carrito histórico}: los que metió en el carrito en los 60 días anteriores, no ha comprado y no están en $\mathcal Q_{\text{hoy}}$.\\
+$\mathcal Q_{\text{últ}}$ & $\gamma_{\text{últ}}$ & \emph{Último visto}: solo el producto $v_{t,m}$.\\
+$\mathcal Q_{\text{ant}}$ & $\gamma_{\text{ant}}$ & \emph{Visto antes}: los demás de la sesión, $v_{t,1},\dots,v_{t,m-1}$.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Un producto puede estar en una clase de carrito y en una de vistos a la vez; entonces se suman sus dos
+coeficientes.
 
 \paragraph{Corrección $\delta$.} Para un producto del carrito de hoy el resto del contexto pesa menos:
 su probabilidad jerárquica entra elevada a $\theta-\delta$ en lugar de $\theta$. $h_0=10^{-3}$ es solo
@@ -322,17 +338,27 @@ recorre los cuatro y $B_b(u)$ es el conjunto: \emph{historia} (compras y carrito
 dos puntuaciones, $T_b$ y $G_b$, con pesos $\alpha_b$ y $\eta_b$.
 
 \paragraph{Etiquetas: $T_b(u,i)$.} La descripción de cada producto contiene exactamente 2 de $K=20$
-etiquetas («a luxury feel», «organic ingredients», «designed for kids»\dots); $\tau(i)$ es el par de
-etiquetas de $i$. Sea $\nu_{b,l}$ el número de productos de la cesta $b$ que llevan la etiqueta $l$. El
-perfil de etiquetas del usuario es otro Dirichlet--multinomial, con prior uniforme de fuerza $a_0=6$;
-la cuota estimada de la etiqueta $l$ es
+etiquetas («a luxury feel», «organic ingredients», «designed for kids»\dots). Para puntuar el producto
+$i$ con la cesta $b$ se cuenta cuántos productos de la cesta llevan cada una de sus dos etiquetas:
+$\nu_1$ los que llevan la primera etiqueta de $i$ y $\nu_2$ los que llevan la segunda. Como cada producto
+de la cesta aporta dos etiquetas, la cesta tiene $2\,|B_b(u)|$ en total. La puntuación es
 \[
-\hat\phi_{b,l}=\frac{\nu_{b,l}+a_0/K}{\sum_{l'=1}^{K}\nu_{b,l'}+a_0},\qquad
-T_b(u,i)=\sum_{l\in\tau(i)}\log\big(K\,\hat\phi_{b,l}\big).
+T_b(u,i)=\log\frac{K\,\nu_1+a_0}{2\,|B_b(u)|+a_0}\;+\;\log\frac{K\,\nu_2+a_0}{2\,|B_b(u)|+a_0},
+\qquad a_0=6 .
 \]
-$K\hat\phi_{b,l}$ compara la cuota de la etiqueta en el perfil con la de un perfil sin preferencias
-($1/K$). $T_b=0$ si la cesta está vacía; es positivo cuando las dos etiquetas del producto abundan en lo
-que el usuario ha tocado.
+Cada fracción compara la cuota de esa etiqueta en la cesta con la de un usuario sin preferencias: vale
+1 si la etiqueta aparece lo esperado por azar, más de 1 si abunda y menos de 1 si falta. Sale de un
+Dirichlet--multinomial como el de los niveles 1 y 2: con prior uniforme de fuerza $a_0$, la cuota
+estimada de la etiqueta es $(\nu_1+a_0/K)/(2|B_b(u)|+a_0)$, y se divide por la cuota neutra $1/K$. La
+prior evita conclusiones tajantes con cestas pequeñas. $T_b=0$ si la cesta está vacía.
+
+\emph{Ejemplo.} La sesión tiene 3 productos, con 6 etiquetas en total; «compact and lightweight» aparece
+en 2 de ellos y «extra durability» en otros 2. Un candidato con justo esas dos etiquetas tiene
+$\nu_1=\nu_2=2$ y
+$T=2\log\frac{20\cdot2+6}{6+6}=2\log 3{,}83=2{,}69$. Un candidato cuyas dos etiquetas no aparecen en
+la sesión tiene $\nu_1=\nu_2=0$ y $T=2\log\frac{0+6}{6+6}=2\log 0{,}5=-1{,}39$. Con el peso de
+la sesión ($\alpha_b=0{,}285$) el primero multiplica su probabilidad por $e^{0{,}285\cdot2{,}69}=2{,}15$ y el
+segundo por $0{,}67$.
 
 \paragraph{Co-compra: $G_b(u,i)$.} Con las $N=55\,956$ cestas históricas se cuenta en cuántas aparecen
 juntos los productos $i$ y $j$ ($M_{ij}$) y en cuántas aparece cada uno ($M_i$). El log-\emph{lift}
@@ -493,10 +519,10 @@ impresiones y $741$ compras:
 Parámetro & Estimación & Parámetro & Estimación\\
 \midrule
 $\theta$ (exponente de $h$) & $0{,}77\pm0{,}05$ & $\eta$ co-compra, historia & $0{,}34\pm0{,}14$\\
-$\gamma$ carrito de hoy & $0{,}84\pm0{,}43$ & $\eta$ co-compra, sesión & $0{,}94\pm0{,}10$\\
-$\gamma$ carrito histórico & $0{,}40\pm0{,}12$ & $\eta$ co-compra, carrito de hoy & $0{,}24\pm0{,}10$\\
-$\gamma$ último visto & $1{,}78\pm0{,}20$ & $\eta$ co-compra, vistas de hoy & $0{,}97\pm0{,}13$\\
-$\gamma$ visto antes & $0{,}95\pm0{,}17$ & $\alpha$ etiquetas, historia & $0{,}50\pm0{,}06$\\
+$\gamma_{\text{hoy}}$ carrito de hoy & $0{,}84\pm0{,}43$ & $\eta$ co-compra, sesión & $0{,}94\pm0{,}10$\\
+$\gamma_{\text{hist}}$ carrito histórico & $0{,}40\pm0{,}12$ & $\eta$ co-compra, carrito de hoy & $0{,}24\pm0{,}10$\\
+$\gamma_{\text{últ}}$ último visto & $1{,}78\pm0{,}20$ & $\eta$ co-compra, vistas de hoy & $0{,}97\pm0{,}13$\\
+$\gamma_{\text{ant}}$ visto antes & $0{,}95\pm0{,}17$ & $\alpha$ etiquetas, historia & $0{,}50\pm0{,}06$\\
 $\delta$ (carrito de hoy $\times\log h$) & $0{,}02\pm0{,}15$ & $\alpha$ etiquetas, sesión & $0{,}28\pm0{,}04$\\
 $\xi_1$ usuario nuevo & $1{,}64\pm0{,}15$ & $\alpha$ etiquetas, carrito de hoy & $0{,}28\pm0{,}05$\\
 $\xi_2$ página de inicio & $-0{,}52\pm0{,}15$ & $\alpha$ etiquetas, vistas de hoy & $0{,}14\pm0{,}05$\\
@@ -562,7 +588,7 @@ Carrito de hoy y vistas de hoy & Con cada evento del usuario; de ahí salen sus 
 Perfil de precio $r_u$ & Con cada compra del usuario.\\
 Precio, rebaja, stock y productos nuevos & Con cada \cod{catalog\_updates} ($\approx 1$~s); el stock se revalida al enviar.\\
 $\kappa$, $\lambda$, $\beta$ & Al reconstruir el modelo (\cod{--build}).\\
-$\theta$ y afinidad ($\gamma_g$, $\delta$, $\alpha_b$, $\eta_b$) & Con \cod{--calibrate}: reproduce el \emph{stream} y reajusta
+$\theta$ y afinidad ($\gamma$, $\delta$, $\alpha_b$, $\eta_b$) & Con \cod{--calibrate}: reproduce el \emph{stream} y reajusta
 \eqref{eq:poisson} con todo el \emph{feedback} acumulado ($\approx 2{,}5$~min).\\
 \bottomrule
 \end{tabular}

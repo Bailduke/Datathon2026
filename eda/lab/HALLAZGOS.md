@@ -265,7 +265,7 @@ lam_cat 0,5 solo: ±0,3 %, nada.
 
 **Veredicto sobre W:** mejora real pero pequeña. Cambiarla obliga a sustituir los recuentos `N` del modelo
 (un `priors_live.pkl` nuevo) y a recalibrar; no lo recomiendo para la final salvo que se quiera apurar ese
-2 %. Queda preparada en `eda/lab/.cache_counts/` (ver «Qué hay listo para desplegar»).
+2 %. Queda preparada en `eda/lab/.cache/counts/` (ver «Qué hay listo para desplegar»).
 
 ## H11 · Exposición de la popularidad solo con el producto en stock (planteada por Ian)
 
@@ -398,7 +398,7 @@ dispositivo reales de cada petición (10 regiones, 3 dispositivos), 1.122 compra
    prácticamente la misma (2,78 % frente a 2,79 % con el mismo juez).
    Para adoptarlo: sustituir `tengo-aurilla-v0/recommender-v4.py` por ese fichero **antes** de la
    calibración del domingo; el proceso en vivo no necesita nada más que el reinicio de siempre.
-2. **Pesos de recuento W** (ganancia estimada ±2 %) — `eda/lab/.cache_counts/priors_live.pkl` tiene el `N`
+2. **Pesos de recuento W** (ganancia estimada ±2 %) — `eda/lab/.cache/counts/priors_live.pkl` tiene el `N`
    recalculado (compra 0 · carrito 1 · vista 0,1), kappa_c = 5 y lam_cat = 0,5; `eda/lab/mk_counts.py` lo
    genera y lo calibra en seco. Para desplegarlo harían falta tres pasos: cambiar en `Config`
    `w_purchase = 0.0`, `w_cart = 1.0`, `w_view = 0.1`; copiar ese `priors_live.pkl` a
@@ -412,6 +412,6 @@ dispositivo reales de cada petición (10 regiones, 3 dispositivos), 1.122 compra
    de rho y de pesos de recuento, reutilización de la descarga en caché). No es para desplegar tal cual, y
    parte de la versión del fichero en vivo anterior al cambio del cuantil de precio (equivalente).
 
-Nota: `recommender-v4.controles.py` se generó a partir del fichero en vivo de las 21:10. Si el fichero en
-vivo ha cambiado después (cuantil de precio sin el −½), hay que volver a aplicar el parche sobre la versión
-actual en lugar de copiar ese fichero: son 30 líneas, todas en `replay_feedback` y `calibrate_live`.
+Nota: `recommender-v4.controles.py` se genera con `eda/lab/mk_controles.py` a partir del fichero en vivo
+**actual** (la última vez, sábado 21:57, ya con el cambio del cuantil de precio). Si el fichero en vivo
+vuelve a cambiar, basta relanzar ese script: aplica las 30 líneas y falla si no encuentra dónde.
