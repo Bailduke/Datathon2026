@@ -9,8 +9,9 @@ Puntuación del producto i para el usuario u en una petición:
                niveles 1 y 2 Dirichlet-multinomial por usuario (prior poblacional × kappa + recuentos
                fraccionados compra 1 / carrito 0,25 / vista 0,02, sin decaimiento + la sesión como
                pseudo-recuentos); nivel 3 logit condicional dentro de la subcategoría:
-               V_i = b_pop·log(pop_i) + pos_i·(b_p0 + b_u·r_u + b_dev + b_reg) + b_sale·rebajado_i,
-               con pop_i la cuota de compras Gamma-Poisson (histórico + stream en vivo).
+               V_i = b_pop·log(pop_i) + z_i·(b_p0 + b_u·r_u + b_dev + b_reg) + b_sale·rebajado_i,
+               con pop_i la cuota de compras Gamma-Poisson (histórico + stream en vivo) y z_i el cuantil
+               de precio del producto en su subcategoría (rango / nº de productos; 1 = el más barato).
   A(u, i)      Afinidad usuario-producto, FUERA del anidamiento (multiplica, no redistribuye):
                · clases: en el carrito durante el stream (g_lc, d_lc), en el carrito histórico (g_hc),
                  último visto de la sesión (g_v0), visto antes en la sesión (g_v1);
@@ -276,8 +277,9 @@ def normalize_views(rv) -> list[str]:
 
 
 def price_positions(price: np.ndarray, sub: np.ndarray, valid: np.ndarray) -> np.ndarray:
-    """Posición de precio dentro de la subcategoría, en (0, 1): 0 = el más caro, 1 = el más barato.
-    Los empates reciben su rango medio. Los productos no válidos quedan en 0,5."""
+    """Cuantil de precio dentro de la subcategoría, invertido: z_i = rango_i / nº de productos, con el rango
+    contado desde el más caro (cerca de 0 = los más caros, 1 = el más barato). Los empates reciben su rango
+    medio. Los productos no válidos quedan en 0,5."""
     upos = np.full(price.size, 0.5)
     order = np.lexsort((-price, sub))                  # por subcategoría y precio descendente
     order = order[valid[order]]
@@ -289,7 +291,7 @@ def price_positions(price: np.ndarray, sub: np.ndarray, valid: np.ndarray) -> np
         p = price[idx]
         ranks = np.arange(1, idx.size + 1, dtype=float)
         _, inv, cnt = np.unique(-p, return_inverse=True, return_counts=True)
-        upos[idx] = ((np.bincount(inv, weights=ranks) / cnt)[inv] - 0.5) / idx.size
+        upos[idx] = (np.bincount(inv, weights=ranks) / cnt)[inv] / idx.size
     return upos
 
 
@@ -554,7 +556,7 @@ def build_priors(rt: RawTree, cfg: Config, cut_day: int | None = None) -> dict:
     sub_cat = np.zeros(ns, int)
     sub_cat[sub] = cat
     upos = price_positions(price, sub, np.ones(n, bool))
-    pos = upos - 0.5
+    pos = upos                                             # z_i; centrarlo no cambiaría nada (se cancela en el logit)
     log.info("[build] catálogo: %d productos, %d categorías, %d subcategorías", n, nc, ns)
 
     # --- 2. atención por posición (solo para calibrar con el log del carrusel)
@@ -1169,7 +1171,7 @@ class State:
             ok = self.active[:n] & ~self.unavailable[:n] & (self.price[:n] > 0)
             order = np.argsort(-expV0)
             snap = Snapshot(n=n, ids=self.ids, index=self.index, sub=self.sub[:n].copy(), cat=self.cat[:n].copy(),
-                            ok=ok, pos=self.upos[:n] - 0.5, g_shape=shape, g_rate=rate, expV0=expV0,
+                            ok=ok, pos=self.upos[:n].copy(), g_shape=shape, g_rate=rate, expV0=expV0,
                             sale_mult=sale_mult, sub_cat=self.sub_cat.copy(), pi_c=self.pi_c.copy(),
                             pi_s=self.pi_s.copy(), users=self.users, bought=self.bought, carted=self.carted,
                             carted_live=self.carted_live, popular=order[ok[order]][:200],
