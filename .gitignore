@@ -12,3 +12,7 @@ __pycache__/
 datathon-fme-2026/
 # credenciales RawTree
 .env
+# estado local / cachés
+state/
+.pytest_cache/
+*.pyc
