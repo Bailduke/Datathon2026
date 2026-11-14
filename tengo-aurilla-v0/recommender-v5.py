@@ -75,7 +75,7 @@ HIST_T0 = "2026-09-15 07:00:00"          # inicio del histórico (UTC)
 # =============================================================================
 @dataclass
 class Config:
-    model_version: str = "tengo-aurilla-v2"
+    model_version: str = "aurilla-tela-v0-theta"
     # --- niveles 1-2: recuentos fraccionados y sesión
     w_purchase: float = 1.0
     w_cart: float = 0.25
@@ -92,7 +92,7 @@ class Config:
     max_per_sub: int = 0                 # 0 = sin límite por subcategoría (modelo acordado)
     taste: bool = True                   # gustos latentes del usuario: etiquetas de la descripción + co-compra
     taste_k: int = 16                    # nº de factores de co-compra (16 predice mejor que la matriz completa)
-    taste_smooth: float = 2.0            # suavizado del lift de co-compra
+    taste_smooth: float = 40.0           # suavizado del lift de co-compra (40 predice mejor que 2: +53 de logver)
     taste_shrink: tuple = (3.0, 1.0, 1.0, 1.0)   # encogimiento de la media por cesta: historia, sesión, carrito hoy, vistas hoy
     tag_alpha: float = 6.0               # fuerza del prior uniforme del perfil de etiquetas (Dirichlet)
     session_mix: bool = False            # True: la sesión como mezcla de peso fijo en P(c). Probado el sábado con
@@ -147,7 +147,7 @@ TASTE_NAMES = ("cf_hist", "cf_sesion", "cf_carrito_hoy", "cf_vistas_hoy", "tag_h
                "tag_vistas_hoy")
 AFF: dict | None = None                  # factores de co-compra y etiquetas (load_affinity)
 TILT_DEFAULT = dict(theta=1.0, g_lc=2.0, g_hc=1.2, g_v0=1.9, g_v1=1.3)
-TILT_BOUNDS = dict(theta=(0.7, 1.4), g_lc=(0.0, 6.0), g_hc=(0.0, 4.0), g_v0=(0.0, 4.0), g_v1=(0.0, 4.0))
+TILT_BOUNDS = dict(theta=(0.4, 1.4), g_lc=(0.0, 6.0), g_hc=(0.0, 4.0), g_v0=(0.0, 4.0), g_v1=(0.0, 4.0))
 
 
 # =============================================================================
