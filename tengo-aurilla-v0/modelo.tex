@@ -1,0 +1,337 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[spanish,es-noshorthands]{babel}
+\usepackage{fontspec}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue]{hyperref}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Dir}{\operatorname{Dir}}
+\newcommand{\Gam}{\operatorname{Gamma}}
+\newcommand{\Poi}{\operatorname{Poisson}}
+\newcommand{\cod}[1]{\texttt{#1}}
+
+\title{\textbf{tengo-aurilla-v0}\\[0.3em]
+\large Modelo jerárquico factorizado para recomendación en tiempo real}
+\author{Equipo \cod{team\_03} $\cdot$ Reto RawTree $\cdot$ Datathon FME 2026}
+\date{Parámetros estimados el 14 de noviembre de 2026, 19:03 CET}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Cada pocos segundos llega un comprador y hay que elegir, en menos de 3~s, los 10 productos
+que verá. Este documento describe el modelo que implementa \cod{recommender-v4.py}: la probabilidad
+de compra de cada producto se factoriza en \emph{categoría $\to$ subcategoría $\to$ producto}. Los dos
+primeros niveles son modelos conjugados Dirichlet--multinomial por usuario; el tercero es un logit
+condicional con popularidad Gamma--Poisson, perfil de precio y afinidad usuario--producto. Todos los
+parámetros libres se estiman por máxima verosimilitud, y los que dependen del comportamiento ante el
+carrusel se estiman con nuestro propio \emph{feedback} en vivo.
+\end{abstract}
+
+\section{Planteamiento}
+
+En la petición $t$ llega el usuario $u$ con un contexto $x_t$ (dispositivo, región, página) y una
+sesión $v_{t,1},\dots,v_{t,m}$: los productos que acaba de ver, del más antiguo al más reciente.
+Respondemos con una lista ordenada $L_t=(i_1,\dots,i_{10})$ de productos distintos y en stock. El
+comprador compra como mucho uno. Si $w_k$ es la atención que recibe la posición $k$
+($1=w_1\ge w_2\ge\dots\ge w_{10}$) y $p_t(i)$ la probabilidad de que compre $i$ si lo examina, las
+compras esperadas son, en primera aproximación,
+\begin{equation}
+\E[\text{compras}\mid L_t] \;\approx\; \sum_{k=1}^{10} w_k\, p_t(i_k). \label{eq:objetivo}
+\end{equation}
+Por la desigualdad de reordenación, \eqref{eq:objetivo} se maximiza eligiendo los 10 productos de
+mayor $p_t(i)$ y colocándolos de mayor a menor. El problema se reduce a estimar bien $p_t(i)$.
+
+\section{El modelo}
+
+Cada producto $i$ pertenece a una subcategoría $s(i)$ y esta a una categoría $c(i)$ (89 subcategorías
+en 10 categorías). Factorizamos
+\begin{equation}
+p_t(i)\;\propto\;
+\underbrace{P\big(c(i)\mid u,\text{sesión}\big)}_{\text{nivel 1}}\;
+\underbrace{P\big(s(i)\mid c(i),u,\text{sesión}\big)}_{\text{nivel 2}}\;
+\underbrace{P\big(i\mid s(i),u,x_t\big)}_{\text{nivel 3}} . \label{eq:factor}
+\end{equation}
+
+\subsection{Niveles 1 y 2: Dirichlet--multinomial por usuario}
+
+Sea $\theta^u$ el vector de probabilidades de compra del usuario sobre las 10 categorías, con prior
+$\theta^u\sim\Dir(\kappa_c\,\pi)$, donde $\pi_c$ es la cuota histórica de compras de la categoría $c$
+en toda la población y $\kappa_c$ la fuerza de la prior. Cada evento del usuario cuenta con un peso
+según su tipo,
+\[
+n_{uc}=\sum_{e\,\in\,\text{eventos de }u}\omega(e)\,\mathbf 1[c(e)=c],\qquad
+\omega(\text{compra})=1,\quad \omega(\text{carrito})=0{,}25,\quad \omega(\text{vista})=0{,}02 ,
+\]
+sin decaimiento temporal. La sesión entra como pseudo-recuentos que solo valen para esta petición,
+\[
+S_c=\sum_{r=1}^{m}\rho^{\,m-r}\,\mathbf 1[c(v_{t,r})=c],\qquad \rho=0{,}65 ,
+\]
+de modo que la vista más reciente pesa 1. El modelo es conjugado: la posterior es
+$\Dir(\kappa_c\pi+n_u+\lambda_c S)$ y su media es
+\begin{equation}
+P(c\mid u,\text{sesión})=\frac{\kappa_c\,\pi_c+n_{uc}+\lambda_c\,S_c}{\kappa_c+n_{u}+\lambda_c\,S},
+\qquad n_u=\sum_c n_{uc},\quad S=\sum_c S_c . \label{eq:cat}
+\end{equation}
+Dentro de cada categoría se repite el mismo modelo sobre sus subcategorías (10 modelos), con prior
+$\pi_{s\mid c}$:
+\begin{equation}
+P(s\mid c,u,\text{sesión})=\frac{\kappa_s\,\pi_{s\mid c}+n_{us}+\lambda_s\,S_s}{\kappa_s+n_{uc}+\lambda_s\,S_c}.
+\label{eq:sub}
+\end{equation}
+Un usuario sin historia ni sesión recibe exactamente la prior poblacional. Actualizar el modelo con
+un evento nuevo es sumar su peso a un recuento.
+
+\subsection{Nivel 3: logit condicional sobre los productos elegibles}
+
+Sea $E_u$ el conjunto de productos \emph{elegibles} para $u$: en stock y \emph{no comprados antes por
+$u$}. Dentro de la subcategoría $s$,
+\begin{equation}
+P(i\mid s,u,x_t)=\frac{\exp(V_{ui})}{\sum_{j\in s\cap E_u}\exp(V_{uj})},\qquad i\in s\cap E_u, \label{eq:logit}
+\end{equation}
+con utilidad
+\begin{equation}
+\begin{aligned}
+V_{ui}={}&\beta_{\text{pop}}\log q_i
++\mathrm{pos}_i\big(\beta_0+\beta_u\,r_u+\beta_{\text{dev}(x_t)}+\beta_{\text{reg}(x_t)}\big)\\
+&+\beta_{\text{sale}}\,d_i+\beta_{\text{seen}}\,z_{ti}+\beta_{\text{cart}}\,a_{ui}.
+\end{aligned}\label{eq:util}
+\end{equation}
+
+\paragraph{Popularidad $q_i$ (Gamma--Poisson).} $q_i$ es la cuota de las compras de la tienda que se
+lleva el producto. Si $C_i$ son sus compras y $T_i$ las compras totales de la tienda mientras el
+producto ha existido,
+\begin{gather*}
+C_i\mid q_i\sim\Poi(q_i\,T_i),\qquad q_i\sim\Gam\big(m_{s(i)}\,b_0,\;b_0\big)\\
+\Longrightarrow\quad q_i\mid C_i\sim\Gam\big(m_{s(i)}\,b_0+C_i,\;b_0+T_i\big),
+\end{gather*}
+donde $m_s$ es la cuota mediana de los productos de la subcategoría y $b_0=20\,000$ compras. Para un
+producto con historia, $q_i\approx C_i/T_i$; un producto nuevo empieza en la mediana de su
+subcategoría con una pseudo-compra de peso, y se corrige con sus ventas en vivo. $C_i$ y $T_i$ suman el
+histórico y el \emph{stream} (\cod{shop.events}).
+
+\paragraph{Precio.} $\mathrm{pos}_i=u_i-\tfrac12$, donde $u_i\in(0,1)$ es la posición del precio actual
+de $i$ dentro de su subcategoría ($0$ = el más caro, $1$ = el más barato). El perfil de precio del
+usuario es el residuo medio de sus compras respecto a lo esperado por popularidad, encogido hacia cero:
+\[
+r_u=\frac{1}{n_u^{\text{compras}}+3}\sum_{i\,\in\,\text{compras de }u}\big(u_i-\bar u_{s(i)}\big),
+\qquad \bar u_s=\frac{\sum_{j\in s}q_j\,u_j}{\sum_{j\in s}q_j}.
+\]
+Es un único parámetro por usuario, válido para todas las categorías. Para un usuario nuevo $r_u=0$ y
+solo actúan el dispositivo y la región.
+
+\paragraph{Indicadores.} $d_i=1$ si el producto está rebajado (precio actual menor que el inicial);
+$z_{ti}=1$ si $i$ está entre las vistas de la sesión; $a_{ui}=1$ si el usuario metió $i$ en el carrito
+alguna vez y todavía no lo ha comprado.
+
+\paragraph{Saciedad.} En el carrusel que puntúa, un producto ya comprado casi no se vuelve a comprar
+(coeficiente estimado $\approx-3$, sección~\ref{sec:lista}). Lo tratamos como exclusión: esos productos
+no están en $E_u$.
+
+\paragraph{Probabilidad final.} Se calcula \eqref{eq:factor} solo para $i\in E_u$. Si una subcategoría
+no tiene productos elegibles su masa se anula y \eqref{eq:sub} se renormaliza; lo mismo con una
+categoría vacía en \eqref{eq:cat}.
+
+\subsection{Lista y exploración}
+
+La lista son los 10 productos de mayor $p_t(i)$, de mayor a menor. Para aprender de los productos
+con poca historia (sobre todo los nuevos) usamos \emph{Thompson Sampling} sobre la popularidad: en cada
+petición se muestrea $\tilde q_i\sim\Gam(m_{s(i)}b_0+C_i,\;b_0+T_i)$ y se ordena con $\tilde q$ en lugar de
+la media. Un producto con muchas ventas apenas se mueve; uno nuevo recibe oportunidades proporcionales
+a su incertidumbre. La posición 1, la más vista, usa siempre las medias.
+
+\section{Estimación de los parámetros}
+
+Ningún parámetro se fija a mano. Hay dos fuentes de datos con comportamientos distintos:
+el histórico (60 días) y nuestro \emph{feedback} del carrusel en vivo, que es el que puntúa.
+
+\subsection{Logit de producto con las compras orgánicas}
+
+$\beta_{\text{pop}},\beta_0,\beta_u,\beta_{\text{dev}},\beta_{\text{reg}}$ se estiman por máxima
+verosimilitud de \eqref{eq:logit} (Newton) sobre compras orgánicas de productos no comprados antes.
+Separación temporal: popularidad y perfiles con los días $[0,30)$, ajuste con $[30,45)$ y evaluación
+con $[45,60)$.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Término & Coeficiente & $z$\\
+\midrule
+$\log q_i$ (popularidad) & $0{,}974$ & $123{,}6$\\
+$\mathrm{pos}_i$ (más barato dentro de la subcategoría) & $0{,}689$ & $7{,}8$\\
+$\mathrm{pos}_i\times r_u$ (perfil de precio del usuario) & $9{,}23$ & $26{,}2$\\
+$\mathrm{pos}_i\times$ iOS \;/\; web (referencia: Android) & $-0{,}61$ \;/\; $-0{,}59$ & $-7{,}4$ \;/\; $-7{,}2$\\
+$\mathrm{pos}_i\times$ región (referencia: Andalucía) & de $-0{,}39$ a $+0{,}33$ & $|z|\le 3{,}4$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+En $8\,444$ elecciones del periodo de evaluación (76 opciones de media; log-verosimilitud al azar
+$-4{,}18$): solo popularidad $-3{,}343$; modelo completo $-3{,}309$. El comprado está entre los 3 más
+probables el $34{,}7$\,\% de las veces.
+
+\subsection{Fuerza de las priors con datos orgánicos}
+
+$\kappa_c$ y $\kappa_s$ maximizan la verosimilitud de las compras de los días $[45,60)$ dados los
+recuentos de $[0,45)$, por ejemplo
+$\ell(\kappa_c)=\sum_u\sum_c F_{uc}\log\frac{\kappa_c\pi_c+n_{uc}}{\kappa_c+n_u}$ con $F_{uc}$ las compras
+futuras. Con $36\,083$ usuarios: $\kappa_c=1$, $\kappa_s=10$. Estos valores se revisan después con el
+carrusel en vivo.
+
+\subsection{Verosimilitud de la lista mostrada}\label{sec:lista}
+
+Los parámetros que describen cómo reacciona el comprador \emph{ante una lista} se estiman con las
+propias listas. Para cada compra del carrusel conocemos la lista $L$ y el producto comprado $y$; bajo
+el modelo,
+\begin{equation}
+P(y\mid L)=\frac{w_{k(y)}\,p_t(y)}{\sum_{j\in L}w_{k(j)}\,p_t(j)}, \label{eq:lista}
+\end{equation}
+con $k(j)$ la posición de $j$. La atención $w_k$ sale del modelo de examen
+$P(\text{clic}\mid i,k)=w_k\,r_i$, ajustado por EM con el histórico y forzado a ser decreciente:
+\[
+w=(1;\;0{,}62;\;0{,}50;\;0{,}42;\;0{,}37;\;0{,}36;\;0{,}33;\;0{,}31;\;0{,}29;\;0{,}28).
+\]
+La log-verosimilitud
+$\sum\log P(y\mid L)$ se maximiza por ascenso por coordenadas sobre rejillas. En esta estimación «ya
+comprado» entra como un indicador más, con coeficiente $\beta_{\text{bought}}$, para no confundirlo
+con el carrito.
+
+\begin{center}
+\small
+\begin{tabular}{p{6.3cm}cc}
+\toprule
+ & Carrusel antiguo & \textbf{Carrusel en vivo}\\
+ & (histórico, días $\ge 45$) & (nuestro \emph{feedback})\\
+\midrule
+Compras usadas & $7\,282$ & $576$\\
+$\lambda_s$ (sesión, subcategoría) & $1$ & se toma el del antiguo\\
+$\kappa_c$ y $\lambda_c$ (categoría) & no identificables$^{*}$ & $2$ y $1$\\
+$\kappa_s$ & --- & $50$\\
+$\beta_{\text{seen}}$ (visto en la sesión) & $1{,}0$ & $0{,}5$\\
+$\beta_{\text{cart}}$ (en el carrito, sin comprar) & $1{,}0$ & $\mathbf{1{,}5}$\\
+$\beta_{\text{bought}}$ (ya comprado) & $\mathbf{+1{,}5}$ & $\mathbf{-3{,}0}$\\
+\midrule
+Log-verosimilitud solo con la posición & $-2{,}074$ & $-2{,}019$\\
+Log-verosimilitud del modelo & $-1{,}405$ & $-1{,}544$\\
+Acierta el producto comprado & $53{,}6$\,\% & $47{,}6$\,\%\\
+Apostando siempre por la posición 1 & $31{,}8$\,\% & $34{,}9$\,\%\\
+\bottomrule
+\end{tabular}
+\end{center}
+{\small $^{*}$ El sistema antiguo solo mostraba productos de la categoría de la sesión, así que el
+factor de categoría es el mismo para toda la lista y se cancela en \eqref{eq:lista}.}
+
+Lecturas principales:
+\begin{itemize}\setlength{\itemsep}{0.15em}
+\item \textbf{La saciedad cambia de signo.} En el histórico lo ya comprado era el $59$\,\% de las compras
+del carrusel; en vivo, el $1{,}2$\,\%. Los organizadores lo confirmaron: el histórico se generó sin
+saciedad y el carrusel que puntúa la tiene. Por eso los parámetros de la lista se toman del
+\emph{feedback} en vivo.
+\item \textbf{El carrito es la mejor señal de afinidad.} El $19{,}8$\,\% de las compras en vivo fueron de
+productos que el usuario tenía en el carrito, que eran solo el $4{,}6$\,\% de lo mostrado.
+\item \textbf{La sesión manda en la categoría, no en la subcategoría.} Quitar la sesión del nivel de
+categoría empeora la log-verosimilitud en vivo de $-1{,}544$ a $-1{,}644$; quitar el carrito, a $-1{,}577$; quitar
+la saciedad, a $-1{,}631$. Usar los parámetros del carrusel antiguo da $-1{,}671$.
+\end{itemize}
+
+\subsection{Rebajas}
+
+En el histórico los precios no cambian; en el \emph{stream} hay rebajas de 2~horas. Cada producto es su
+propio control: se comparan sus compras durante la rebaja con las esperadas a su tasa anterior,
+\[
+e^{\beta_{\text{sale}}}=\frac{\sum_i C_i^{\text{durante}}}{\sum_i C_i^{\text{antes}}\;\Delta_i^{\text{durante}}/\Delta_i^{\text{antes}}}
+=\frac{4\,555}{3\,733}=1{,}22\quad\Longrightarrow\quad\beta_{\text{sale}}=0{,}20
+\]
+($1\,733$ productos). Agregar productos-hora de lotes distintos daría un cociente menor que 1 por la
+paradoja de Simpson.
+
+\section{Actualización en vivo}
+
+\begin{center}
+\begin{tabular}{p{6.2cm}p{8.6cm}}
+\toprule
+Pieza & Cuándo y con qué se actualiza\\
+\midrule
+Priors $\pi_c$, $\pi_{s\mid c}$ & Fijas: varían menos de $0{,}25$ puntos de una semana a otra.\\
+Recuentos $n_{uc}$, $n_{us}$ & Con cada vista, carrito o compra del usuario (\cod{shop.events}, cada 10~s).\\
+Sesión $S$ & En cada petición (\cod{recent\_views}); no se guarda.\\
+Popularidad $q_i$ ($C_i$, $T_i$) & Con cada compra orgánica en vivo.\\
+Carrito $a_{ui}$ y comprados $E_u$ & Con cada evento del usuario y con cada compra de nuestro \emph{feedback}.\\
+Perfil de precio $r_u$ & Con cada compra del usuario.\\
+Precio, rebaja, stock y productos nuevos & Con cada \cod{catalog\_updates} ($\approx 1$~s); el stock se revalida al enviar.\\
+$\kappa$, $\lambda$, $\beta$ & Al reconstruir el modelo (\cod{--build}, $\approx 30$~s), con todo el \emph{feedback} acumulado.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Evidencia que justifica cada decisión}
+
+\begin{center}
+\begin{tabular}{p{7.4cm}p{7.4cm}}
+\toprule
+Dato medido & Decisión\\
+\midrule
+Comprar en una subcategoría multiplica por $4{,}9$ la probabilidad de comprar en otra de su familia
+(por $1{,}6$ en otra familia). & Jerarquía categoría $\to$ subcategoría.\\
+La historia de hace un mes predice igual que la reciente (acierto $0{,}335$ y $0{,}336$). & Recuentos sin
+decaimiento.\\
+Vistas, carritos y compras predicen parecido la subcategoría futura (acierto $0{,}38$--$0{,}40$). & Recuentos
+fraccionados.\\
+Dentro de la subcategoría todos compran lo popular ($\beta_{\text{pop}}\approx 1$); la marca no importa
+(repetición de marca $1{,}00$ veces lo esperado). & Popularidad como base del nivel 3; sin marca.\\
+El perfil de precio del usuario es estable (fiabilidad entre mitades $r=0{,}44$) y común a todas las
+categorías ($r=0{,}36$ entre categorías). & Un único $r_u$ por usuario.\\
+En vivo, posiciones 1--3: en el carrito sin comprar $0{,}88$\,\%; ya comprado $0{,}05$\,\%; solo visto
+$0{,}05$\,\%; sin interacción $0{,}13$\,\%. & Término de carrito; exclusión de lo comprado; lo solo visto no
+puntúa.\\
+En vivo, respecto a la última vista: misma categoría $0{,}5$\,\%; otra categoría $0{,}10$\,\%; la misma
+subcategoría no añade nada. & $\lambda_c$ y $\lambda_s$ separados y pequeños.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Validación}
+
+\paragraph{Evaluación con el histórico.} Modelo estimado con los días $[0,53)$ y evaluado con $3\,000$
+compras del carrusel antiguo de los días $[53,60)$, según la relación previa del usuario con el
+producto comprado (HR@$k$: el comprado está entre nuestros $k$ primeros):
+
+\begin{center}
+\small
+\begin{tabular}{lrrrc}
+\toprule
+ & & \multicolumn{2}{c}{Modelo} & Los 10 más vendidos\\
+Producto comprado & $n$ & HR@10 & HR@3 & HR@10\\
+\midrule
+Ya comprado antes (excluido a propósito) & $1\,838$ & $0$ & $0$ & $0{,}59$\\
+En su carrito, sin comprar & $398$ & $0{,}89$ & $0{,}70$ & $0{,}47$\\
+Sin compra ni carrito previos & $764$ & $0{,}49$ & $0{,}21$ & $0{,}37$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+El primer grupo no es alcanzable ni deseable: es el comportamiento del histórico que el carrusel en
+vivo no tiene. En los otros dos, el modelo supera a los más vendidos.
+
+\paragraph{Operación.} Calcular una lista cuesta unos 2~ms. Con el \emph{stream} real, la petición tiene
+una antigüedad mediana de $0{,}75$~s cuando se envía la respuesta (percentil 95: $1{,}06$~s), frente al
+límite de 3~s.
+
+\section{Limitaciones}
+
+\begin{itemize}\setlength{\itemsep}{0.15em}
+\item Los parámetros del carrusel en vivo se apoyan en 576 compras; las rejillas son gruesas y
+$\kappa_c$ y $\lambda_c$ solo se identifican bien en su cociente. Hay que reconstruir el modelo cuando
+haya más \emph{feedback}.
+\item \eqref{eq:objetivo} trata los 10 productos como independientes. Si el comprador se lleva como
+mucho uno, varios productos muy parecidos compiten entre sí; el código admite un máximo por
+subcategoría (\cod{max\_per\_sub}), desactivado por defecto.
+\item No hay todavía una comparación en vivo contra otra versión; el script permite repartir las
+peticiones por \emph{hash} (\cod{--shard}) para hacerla sin respuestas duplicadas.
+\end{itemize}
+
+\end{document}
