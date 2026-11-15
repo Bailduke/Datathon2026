@@ -286,8 +286,19 @@ def _event_filters(alias: str, regions: Tuple[str, ...], devices: Tuple[str, ...
     return f"{_in(p + 'region::String', regions)} AND {_in(p + 'device::String', devices)}"
 
 
+def _ts_filter(alias: str, start: str, end: str) -> str:
+    """Interval [start, end) sobre ts (UTC). Cadenes buides = sense límit."""
+    p = f"{alias}." if alias else ""
+    conds = []
+    if start:
+        conds.append(f"{p}ts::DateTime64(3) >= toDateTime64({_lit(start)}, 3)")
+    if end:
+        conds.append(f"{p}ts::DateTime64(3) < toDateTime64({_lit(end)}, 3)")
+    return " AND ".join(conds) or "1"
+
+
 @st.cache_data(ttl=30, show_spinner=False)
-def q_live_products(regions: Tuple[str, ...], devices: Tuple[str, ...]) -> pd.DataFrame:
+def q_live_products(regions: Tuple[str, ...], devices: Tuple[str, ...], start: str = "", end: str = "") -> pd.DataFrame:
     df = run_sql(
         f"""
         SELECT product_id::String AS product_id,
@@ -296,7 +307,7 @@ def q_live_products(regions: Tuple[str, ...], devices: Tuple[str, ...]) -> pd.Da
                countIf(event_type::String = 'purchase')    AS purchases,
                sumIf(price_eur::Float64, event_type::String = 'purchase') AS revenue
         FROM shop.events
-        WHERE {_event_filters('', regions, devices)}
+        WHERE {_event_filters('', regions, devices)} AND {_ts_filter('', start, end)}
         GROUP BY product_id
         """
     )
@@ -343,8 +354,9 @@ def _feedback_from(regions: Tuple[str, ...], devices: Tuple[str, ...]) -> Tuple[
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def q_feedback(regions: Tuple[str, ...], devices: Tuple[str, ...]) -> pd.DataFrame:
+def q_feedback(regions: Tuple[str, ...], devices: Tuple[str, ...], start: str = "", end: str = "") -> pd.DataFrame:
     frm, where = _feedback_from(regions, devices)
+    where += f" AND {_ts_filter('f', start, end)}"
     df = run_sql(
         f"""
         SELECT f.served_by::String       AS served_by,
@@ -391,8 +403,10 @@ _CATEGORY_MAP = """
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def q_category_region(source: str, regions: Tuple[str, ...], devices: Tuple[str, ...]) -> pd.DataFrame:
+def q_category_region(source: str, regions: Tuple[str, ...], devices: Tuple[str, ...], start: str = "",
+                      end: str = "") -> pd.DataFrame:
     table = "shop.events" if source == "live" else "shop.history_events"
+    tsf = _ts_filter("e", start, end) if source == "live" else "1"
     df = run_sql(
         f"""
         SELECT c.category AS category, e.region::String AS region,
@@ -401,7 +415,7 @@ def q_category_region(source: str, regions: Tuple[str, ...], devices: Tuple[str,
                sumIf(e.price_eur::Float64, e.event_type::String = 'purchase') AS revenue
         FROM {table} AS e
         INNER JOIN ({_CATEGORY_MAP}) AS c ON c.pid = e.product_id::String
-        WHERE {_event_filters('e', regions, devices)}
+        WHERE {_event_filters('e', regions, devices)} AND {tsf}
         GROUP BY category, region
         """
     )
@@ -493,9 +507,10 @@ def q_store_slots(regions: Tuple[str, ...], devices: Tuple[str, ...]) -> pd.Data
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def q_feedback_hourly(regions: Tuple[str, ...], devices: Tuple[str, ...]) -> pd.DataFrame:
+def q_feedback_hourly(regions: Tuple[str, ...], devices: Tuple[str, ...], start: str = "", end: str = "") -> pd.DataFrame:
     """Peticions del carrusel per hora i per qui les ha servit (per veure les aturades del recommender)."""
     frm, where = _feedback_from(regions, devices)
+    where += f" AND {_ts_filter('f', start, end)}"
     df = run_sql(
         f"""
         SELECT toString(toStartOfHour(f.ts::DateTime64(3))) AS hour,
@@ -542,29 +557,45 @@ def prefetch(jobs: Dict[str, Tuple[Callable[..., Any], tuple]]) -> Tuple[Dict[st
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. LÒGICA DE NEGOCI
 # ──────────────────────────────────────────────────────────────────────────────
-def stockout_metrics(changes: pd.DataFrame, live_start: pd.Timestamp, now: pd.Timestamp) -> pd.DataFrame:
-    """Per producte: nº de trencaments, hores sense estoc (intervals oberts fins ara) i estat actual."""
+def stockout_metrics(changes: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """
+    Per producte i dins del període [start, end): nº de ruptures, hores sense estoc i estat al final del període.
+    Un producte que ja estava sense estoc en començar el període compta com una ruptura i només suma les hores
+    que cauen dins del període.
+    """
     cols = ["product_id", "oos_count", "oos_hours", "currently_oos", "last_oos"]
-    if changes.empty:
+    if changes.empty or end <= start:
         return pd.DataFrame(columns=cols)
+
+    def overlap(a: pd.Timestamp, b: pd.Timestamp) -> float:
+        return max((min(b, end) - max(a, start)).total_seconds(), 0) / 3600.0
+
     rows = []
     for pid, grp in changes.sort_values(["product_id", "ts"]).groupby("product_id", sort=False):
-        oos_since, count, hours, last_oos = None, 0, 0.0, pd.NaT
+        oos_since, count, hours, last_oos, carried, checked = None, 0, 0.0, pd.NaT, False, False
         for change, ts in zip(grp["change"], grp["ts"]):
             if pd.isna(ts):
                 continue
-            ts = max(ts, live_start)
+            if ts >= end:
+                break
+            if not checked and ts >= start:
+                checked, carried = True, oos_since is not None
             if change == "out_of_stock":
-                count += 1
-                last_oos = ts
+                if ts >= start:
+                    count += 1
+                    last_oos = ts
                 if oos_since is None:
                     oos_since = ts
             elif change == "back_in_stock" and oos_since is not None:
-                hours += max((ts - oos_since).total_seconds(), 0) / 3600.0
+                hours += overlap(oos_since, ts)
                 oos_since = None
+        if not checked:
+            carried = oos_since is not None
         if oos_since is not None:
-            hours += max((now - oos_since).total_seconds(), 0) / 3600.0
-        rows.append((pid, count, hours, oos_since is not None, last_oos))
+            hours += overlap(oos_since, end)
+        count += int(carried)
+        if count or hours:
+            rows.append((pid, count, hours, oos_since is not None, last_oos))
     return pd.DataFrame(rows, columns=cols)
 
 
@@ -607,7 +638,7 @@ def build_product_table(
     prod["cart_rate_h"] = np.where(use_live, live_cart_rate, hist_cart_rate)
     prod["sales_rate_h"] = pd.to_numeric(prod["sales_rate_h"], errors="coerce").fillna(0.0)
     prod["cart_rate_h"] = pd.to_numeric(prod["cart_rate_h"], errors="coerce").fillna(0.0)
-    prod["rate_source"] = np.where(use_live, "avui", "històric")
+    prod["rate_source"] = np.where(use_live, "període", "històric")
     prod["potential_rev_h"] = prod["sales_rate_h"] * prod["price_eur"]
     prod["lost_units"] = prod["sales_rate_h"] * prod["oos_hours"]
     prod["lost_revenue"] = prod["lost_units"] * prod["price_eur"]
@@ -653,6 +684,7 @@ def price_change_analysis(
     categories: Tuple[str, ...],
     live_start: pd.Timestamp,
     now: pd.Timestamp,
+    period: Tuple[pd.Timestamp, pd.Timestamp] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """
     Per a cada categoria rebaixada:
@@ -660,7 +692,9 @@ def price_change_analysis(
         HANGOVER_H hores següents al retorn al preu original, només com a comprovació) o «normal»;
       * pes = vendes dels productes rebaixats ÷ vendes del control a les franges a preu complet (abans + normal);
       * esperat(franja) = pes × vendes del control a la franja (unitats i facturació a preu original);
-      * la rendibilitat es mesura NOMÉS a la finestra de rebaixa.
+      * la rendibilitat es mesura NOMÉS a la finestra de rebaixa;
+      * amb `period`, es mesuren les rebaixes que COMENCEN dins del període; la referència es calcula amb tot el
+        dia i n'exclou totes les rebaixes (també les de fora del període, marcades com a «fora»).
     El control són els productes que no s'han rebaixat mai: el flux de compradors és constant, però el
     catàleg inicial perd quota durant el dia per l'entrada de productes nous, i el control ho corregeix.
     """
@@ -670,6 +704,9 @@ def price_change_analysis(
         return empty
     if categories:
         win = win[win["category"].isin(categories)]
+    win_all = win
+    if period is not None:
+        win = win[(win["start"] >= period[0]) & (win["start"] < period[1])]
     if win.empty:
         return empty
 
@@ -682,7 +719,9 @@ def price_change_analysis(
 
     rows, skipped = [], []
     hang = timedelta(hours=HANGOVER_H)
-    for cat, wg in win.groupby("category"):
+    in_period = set(zip(win["category"], win["start"]))
+    for cat in win["category"].unique():
+        wg = win_all[win_all["category"] == cat]
         first = wg["start"].min()
         try:
             obs = disc.loc[cat].reindex(ctrl.index).fillna(0.0)
@@ -692,10 +731,12 @@ def price_change_analysis(
         pre = ctrl.index < first
         phase = np.where(pre, "abans", "normal").astype(object)
         for w in wg.itertuples(index=False):
+            inside = (cat, w.start) in in_period
             after = (ctrl.index >= w.end) & (ctrl.index < w.end + hang) & (phase == "normal") & (not w.open)
-            phase[after] = "després"
+            phase[after] = "després" if inside else "fora"
         for w in wg.itertuples(index=False):
-            phase[(ctrl.index >= w.start) & (ctrl.index < w.end)] = "durant"
+            inside = (cat, w.start) in in_period
+            phase[(ctrl.index >= w.start) & (ctrl.index < w.end)] = "durant" if inside else "fora"
         # Pes de partida i preu mitjà a preu complet amb TOTES les franges sense rebaixa ni ressaca (abans i
         # normal). Amb només les franges d'abans (1,5 h a Pets) el pes surt un 10 % massa alt i tot el dia
         # posterior sembla «per sota», cosa que es confondria amb una ressaca inexistent.
@@ -797,7 +838,7 @@ def discount_index(long: pd.DataFrame, win: pd.DataFrame, before_h: float = 2.0,
             continue
         rel = (d["slot"] - w.start).dt.total_seconds() / 3600.0
         inside = (d["slot"] >= w.start) & (d["slot"] < w.end)
-        keep = (rel >= -before_h) & (rel < after_h) & ((d["phase"] != "durant") | inside)
+        keep = (rel >= -before_h) & (rel < after_h) & (d["phase"] != "fora") & ((d["phase"] != "durant") | inside)
         parts.append(pd.DataFrame({"rel_h": rel[keep], "obs": d["obs_units"][keep], "exp": d["exp_units"][keep]}))
     if not parts:
         return pd.DataFrame(columns=cols)
@@ -864,6 +905,20 @@ div[class*="st-key-tile_"] .stButton button:hover {{ border-color: {C['team']}; 
 .stTabs [data-baseweb="tab-list"] {{ gap: .4rem; }}
 .stTabs [data-baseweb="tab"] {{ padding: .35rem .9rem; }}
 div[data-testid="stDataFrame"] {{ border: 1px solid {C['border']}; border-radius: 10px; }}
+div.st-key-period_box button {{ justify-content: flex-start; background: {C['card']}; border: 1px solid {C['border']};
+    min-height: 2.5rem; }}
+div.st-key-period_box button:hover {{ border-color: {C['team']}; }}
+div.st-key-advice_box {{ position: fixed; right: 1.6rem; bottom: 1.4rem; z-index: 1000; width: auto !important; }}
+div.st-key-advice_box button {{ width: 60px; height: 60px; border-radius: 50%; font-size: 1.7rem; padding: 0;
+    background: #2a2410; border: 1px solid {C['warning']}; box-shadow: 0 0 18px rgba(250,178,25,.35); }}
+div.st-key-advice_box button:hover {{ box-shadow: 0 0 26px rgba(250,178,25,.6); border-color: {C['warning']}; }}
+div[data-testid="stPopoverBody"] {{ min-width: 440px; max-width: 540px; }}
+.adv-title {{ font-weight: 700; font-size: 1.02rem; color: {C['warning']}; }}
+.adv-scope {{ font-family: 'JetBrains Mono', monospace; font-size: .68rem; color: {C['muted']}; margin: .1rem 0 .5rem 0; }}
+.adv-item {{ border-top: 1px solid {C['border']}; padding: .55rem 0 .45rem 0; }}
+.adv-act {{ font-weight: 600; color: {C['text']}; font-size: .9rem; }}
+.adv-why {{ color: {C['text2']}; font-size: .8rem; line-height: 1.45; margin-top: .2rem; }}
+.adv-why b {{ color: {C['text']}; }}
 </style>
 """
 
@@ -1034,70 +1089,111 @@ view = st.query_params.get("v", "home")
 if view not in VIEWS:
     view = "home"
 
-# ── Barra superior: títol, filtres globals i refresc ─────────────────────────
-bar = st.columns([3.4, 2.1, 2.1, 1.4, 0.45], vertical_alignment="center", gap="small")
-with bar[0]:
-    if view == "home":
-        head_ph = st.empty()
-    else:
-        b1, b2 = st.columns([1, 3.3], vertical_alignment="center")
-        b1.button("← Tornar", key="back", on_click=go_to, args=("home",), width="stretch")
-        head_ph = b2.empty()
-sel_cat = tuple(bar[1].multiselect("Categoria", dims["category"], key="f_cat", placeholder="Totes les categories",
-                                   label_visibility="collapsed"))
-sel_reg = tuple(bar[2].multiselect("Regió", dims["region"], key="f_reg", placeholder="Totes les regions",
-                                   label_visibility="collapsed"))
-sel_dev = tuple(bar[3].multiselect("Dispositiu", dims["device"], key="f_dev", placeholder="Tots els dispositius",
-                                   label_visibility="collapsed"))
-if bar[4].button("⟳", key="refresh", help="Tornar a consultar les dades a RawTree (també ho fa recarregar la pàgina)",
-                 width="stretch"):
-    st.session_state["_snap"] = {}
-    st.session_state["_memo"] = {}
-    st.session_state.pop("_dims", None)
-    st.cache_data.clear()
-    st.rerun()
-
-# ── Càrrega en paral·lel ─────────────────────────────────────────────────────
-dead_days = int(st.session_state.get("dead_days_v", 7))
-dead_max_sales = int(st.session_state.get("dead_max_v", 0))
-snap_key = (sel_reg, sel_dev, dead_days)
-_snaps = st.session_state.setdefault("_snap", {})
-if snap_key in _snaps:
-    data, errors = _snaps[snap_key]
-else:
-  with st.spinner("Consultant RawTree…"):
-    data, errors = prefetch({
-        "windows": (q_windows, ()),
-        "catalog": (q_catalog, ()),
-        "stock": (q_stock_changes, ()),
-        "live": (q_live_products, (sel_reg, sel_dev)),
-        "hist": (q_hist_products, (sel_reg, sel_dev, dead_days)),
-        "feedback": (q_feedback, (sel_reg, sel_dev)),
-        "fb_hourly": (q_feedback_hourly, (sel_reg, sel_dev)),
-        "clicks": (q_carousel_clicks, (sel_reg, sel_dev)),
-        # L'estoc mort és global de magatzem: no depèn de regió ni dispositiu (caché compartida si no hi ha filtres).
-        "live_all": (q_live_products, ((), ())),
-        "hist_all": (q_hist_products, ((), (), dead_days)),
-        "clicks_all": (q_carousel_clicks, ((), ())),
-        "heat_live": (q_category_region, ("live", sel_reg, sel_dev)),
-        "heat_hist": (q_category_region, ("hist", sel_reg, sel_dev)),
-        "pc_events": (q_price_events, ()),
-        "pc_sales": (q_price_change_sales, (sel_reg, sel_dev)),
-        "store": (q_store_slots, (sel_reg, sel_dev)),
-    })
-  if not errors:   # una càrrega amb errors no es congela: es torna a provar en el següent clic
-      _snaps[snap_key] = (data, errors)
-
-win = data["windows"]
+# ── Instant de referència de la sessió: fixa «ara» per a tots els períodes ───
+if "_win" not in st.session_state:
+    st.session_state["_win"] = q_windows()
+win = st.session_state["_win"]
 if win.empty or pd.isna(win.iloc[0].get("now")):
-    st.error("No s'ha pogut llegir la finestra temporal de RawTree.")
-    warn_errors(errors, ["windows"])
+    st.session_state.pop("_win", None)
+    st.error("No s'ha pogut llegir la finestra temporal de RawTree. Torna-ho a provar amb F5.")
     st.stop()
 w0 = win.iloc[0]
 now = w0["now"]
 live_start = w0["live_start"] if pd.notna(w0["live_start"]) else now.normalize()
 live_hours = max((now - live_start).total_seconds() / 3600.0, 1e-6)
 hist_hours = max((w0["hist_end"] - w0["hist_start"]).total_seconds() / 3600.0, 0.0) if pd.notna(w0["hist_start"]) else 0.0
+
+# ── Període d'anàlisi: les últimes N hores (de 1 a 24), triades amb una barra lliscant ──
+MAX_HOURS = 24
+
+
+def period_bounds(hours: int) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    return max(now - pd.Timedelta(hours=hours), live_start), now
+
+
+def _sql_ts(ts: pd.Timestamp) -> str:
+    return f"{ts:%Y-%m-%d %H:%M:%S.%f}"[:-3]
+
+
+# ── Barra superior: títol, període, filtres globals i refresc ────────────────
+bar = st.columns([2.9, 1.45, 1.75, 1.75, 1.25, 0.45], vertical_alignment="center", gap="small")
+with bar[0]:
+    if view == "home":
+        head_ph = st.empty()
+    else:
+        b1, b2 = st.columns([1, 3.0], vertical_alignment="center")
+        b1.button("← Tornar", key="back", on_click=go_to, args=("home",), width="stretch")
+        head_ph = b2.empty()
+hours = int(st.session_state.get("f_hours", MAX_HOURS))
+with bar[1].container(key="period_box"):
+    with st.popover(f"🕒 {'Última hora' if hours == 1 else f'Últimes {hours} h'}", width="stretch",
+                    help="Interval de temps de totes les xifres. L'històric de 60 dies es manté com a referència."):
+        st.markdown("<div class='adv-title' style='color:inherit'>Període d'anàlisi</div>", unsafe_allow_html=True)
+        hours = st.slider("Hores enrere", 1, MAX_HOURS, MAX_HOURS, step=1, key="f_hours", format="%d h",
+                          label_visibility="collapsed")
+        st.caption("De l'última hora a les últimes 24 hores. Cada període nou es consulta un cop (2–3 s) "
+                   "i després queda congelat.")
+period = "Última hora" if hours == 1 else f"Últimes {hours} h"
+sel_cat = tuple(bar[2].multiselect("Categoria", dims["category"], key="f_cat", placeholder="Totes les categories",
+                                   label_visibility="collapsed"))
+sel_reg = tuple(bar[3].multiselect("Regió", dims["region"], key="f_reg", placeholder="Totes les regions",
+                                   label_visibility="collapsed"))
+sel_dev = tuple(bar[4].multiselect("Dispositiu", dims["device"], key="f_dev", placeholder="Tots els dispositius",
+                                   label_visibility="collapsed"))
+if bar[5].button("⟳", key="refresh", help="Tornar a consultar les dades a RawTree (també ho fa recarregar la pàgina)",
+                 width="stretch"):
+    for k in ("_snap", "_memo"):
+        st.session_state[k] = {}
+    for k in ("_dims", "_win"):
+        st.session_state.pop(k, None)
+    st.cache_data.clear()
+    st.rerun()
+
+p_start, p_end = period_bounds(hours)
+p_empty = p_end <= p_start
+p_hours = max((p_end - p_start).total_seconds() / 3600.0, 1e-6)
+P_IN = "en l'última hora" if hours == 1 else f"en les últimes {hours} hores"
+P_OF = "de l'última hora" if hours == 1 else f"de les últimes {hours} hores"
+ps, pe = _sql_ts(p_start), _sql_ts(max(p_end, p_start))
+
+# ── Càrrega en paral·lel: dades fixes de la sessió + dades del període ───────
+dead_days = int(st.session_state.get("dead_days_v", 7))
+dead_max_sales = int(st.session_state.get("dead_max_v", 0))
+snap_key = (sel_reg, sel_dev, dead_days, ps, pe)
+_snaps = st.session_state.setdefault("_snap", {})
+
+
+def load(key: tuple, jobs: Dict[str, Tuple[Callable[..., Any], tuple]]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    if key in _snaps:
+        return _snaps[key]
+    with st.spinner("Consultant RawTree…"):
+        res = prefetch(jobs)
+    if not res[1]:   # una càrrega amb errors no es congela: es torna a provar en el següent clic
+        _snaps[key] = res
+    return res
+
+
+base, err_base = load(("base", sel_reg, sel_dev, dead_days), {
+    "catalog": (q_catalog, ()),
+    "stock": (q_stock_changes, ()),
+    "hist": (q_hist_products, (sel_reg, sel_dev, dead_days)),
+    "clicks": (q_carousel_clicks, (sel_reg, sel_dev)),
+    # L'estoc mort és global de magatzem i mira els últims N dies: no depèn del període, la regió ni el dispositiu.
+    "live_all": (q_live_products, ((), ())),
+    "hist_all": (q_hist_products, ((), (), dead_days)),
+    "clicks_all": (q_carousel_clicks, ((), ())),
+    "heat_hist": (q_category_region, ("hist", sel_reg, sel_dev)),
+    "pc_events": (q_price_events, ()),
+    "pc_sales": (q_price_change_sales, (sel_reg, sel_dev)),
+    "store": (q_store_slots, (sel_reg, sel_dev)),
+})
+per, err_per = load(("period", sel_reg, sel_dev, ps, pe), {
+    "live": (q_live_products, (sel_reg, sel_dev, ps, pe)),
+    "feedback": (q_feedback, (sel_reg, sel_dev, ps, pe)),
+    "fb_hourly": (q_feedback_hourly, (sel_reg, sel_dev, ps, pe)),
+    "heat_live": (q_category_region, ("live", sel_reg, sel_dev, ps, pe)),
+})
+data, errors = {**base, **per}, {**err_base, **err_per}
 
 cat = data["catalog"]
 if cat.empty:
@@ -1106,16 +1202,22 @@ if cat.empty:
     st.stop()
 cat_of = cat.set_index("product_id")["category"]
 
-head_html = (f"<div class='app-eyebrow'>Datathon FME 2026 · RawTree · {TEAM} · dades de les {now:%H:%M} UTC "
+_p_end = max(p_end, p_start)
+_p_txt = (f"{p_start:%d/%m %H:%M}–{_p_end:%H:%M}" if p_start.date() == _p_end.date()
+          else f"{p_start:%d/%m %H:%M} – {_p_end:%d/%m %H:%M}")
+head_html = (f"<div class='app-eyebrow'>Datathon FME 2026 · RawTree · {TEAM} · {period}: {_p_txt} UTC · "
+             f"dades de les {now:%H:%M} UTC "
              f"(F5 o ⟳ per actualitzar)</div>")
 head_ph.markdown(head_html + f"<div class='app-title'>{VIEWS[view] if view != 'home' else 'Quadre econòmic i de magatzem'}</div>",
                  unsafe_allow_html=True)
+if p_empty:
+    st.info(f"El període «{period}» no té dades. Tria un període més llarg.")
 
 
 # ── Càlculs compartits (es fan un sol cop per instantània i filtre de categoria) ─
 def compute_shared() -> Dict[str, Any]:
-  stock = stockout_metrics(data["stock"], live_start, now)
-  products = build_product_table(cat, data["live"], data["hist"], data["clicks"], stock, live_hours, hist_hours)
+  stock = stockout_metrics(data["stock"], p_start, p_end)
+  products = build_product_table(cat, data["live"], data["hist"], data["clicks"], stock, p_hours, hist_hours)
   if sel_cat:
       products = products[products["category"].isin(sel_cat)]
 
@@ -1141,7 +1243,10 @@ def compute_shared() -> Dict[str, Any]:
   store = data["store"]
   if not store.empty:
       store = store[(store["slot"] >= live_start.floor("30min")) & (store["slot"] + timedelta(minutes=30) <= now)]
-  store_cat = store[store["category"].isin(sel_cat)] if (sel_cat and not store.empty) else store
+  # Gràfics de facturació per franja: només les franges completes dins del període.
+  store_p = (store[(store["slot"] >= p_start.floor("30min")) & (store["slot"] + timedelta(minutes=30) <= p_end)]
+             if not store.empty else store)
+  store_cat = store_p[store_p["category"].isin(sel_cat)] if (sel_cat and not store_p.empty) else store_p
   org_slots = (store_cat.groupby("slot")[["revenue", "purchases"]].sum().reset_index()
                if not store_cat.empty else pd.DataFrame(columns=["slot", "revenue", "purchases"]))
 
@@ -1164,7 +1269,8 @@ def compute_shared() -> Dict[str, Any]:
   dead["exp_sales"] = dead["views_win"] * dead["category"].map(cat_conv).fillna(overall_conv)
   dead["dead_type"] = np.where(dead["exp_sales"] >= DEAD_EXPECTED_MIN, TYPE_LOOKED, TYPE_UNSEEN)
 
-  pc_long, pc_by, pc_win, pc_tot = price_change_analysis(data["pc_events"], data["pc_sales"], sel_cat, live_start, now)
+  pc_long, pc_by, pc_win, pc_tot = price_change_analysis(data["pc_events"], data["pc_sales"], sel_cat, live_start, now,
+                                                         period=(p_start, p_end))
   _closed = pc_win[~pc_win["open"]] if not pc_win.empty else pc_win
   pc_dur = (float(((_closed["end"] - _closed["start"]).dt.total_seconds() / 3600).median())
             if not _closed.empty else 2.0)
@@ -1181,7 +1287,7 @@ def compute_shared() -> Dict[str, Any]:
 
 
 _memo = st.session_state.setdefault("_memo", {})
-_memo_key = (snap_key, sel_cat, dead_max_sales)
+_memo_key = (snap_key, sel_cat, dead_max_sales)   # snap_key ja inclou el període
 if _memo_key not in _memo:
     _memo[_memo_key] = compute_shared()
 globals().update(_memo[_memo_key])   # products, dead, pc_* ... per a les pantalles
@@ -1189,6 +1295,226 @@ globals().update(_memo[_memo_key])   # products, dead, pc_* ... per a les pantal
 
 def cost_short(kind: str, value: float) -> str:
     return {"never": "Cap cost", "always": "Qualsevol"}.get(kind, ("&lt; " if kind == "below" else "&gt; ") + eur(value, 2))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BOMBETA DE CONSELL: accions recomanades calculades amb les dades i els filtres actuals
+# ══════════════════════════════════════════════════════════════════════════════
+Advice = List[Tuple[str, str]]   # [(acció, per què amb xifres)]
+
+
+def scope_label(category: str = None, extra: str = "", with_period: bool = True) -> str:
+    """Text de l'àmbit al qual s'apliquen els consells (filtres globals + filtre propi de la pantalla)."""
+    cats = [category] if category else list(sel_cat)
+    parts = ([period] if with_period else []) + [", ".join(cats) if cats else "Totes les categories"]
+    if sel_reg:
+        parts.append(", ".join(sel_reg))
+    if sel_dev:
+        parts.append(", ".join(sel_dev))
+    if extra:
+        parts.append(extra)
+    return " · ".join(parts)
+
+
+def advice_retorn() -> Advice:
+    items: List[Tuple[float, str, str]] = []   # (impacte per ordenar, acció, per què)
+    # 1. Disponibilitat del recommender
+    if not fb.empty:
+        total_imp = fb["impressions"].sum()
+        fb_imp = fb.loc[fb["served_by"] == "fallback", "impressions"].sum()
+        share = safe_div(fb_imp, total_imp)
+        # El carrusel no és d'una categoria: els euros per carrusel es calculen amb totes les compres del carrusel.
+        agg = fb.groupby("served_by")[["impressions", "revenue"]].sum()
+        rpm = {s: safe_div(agg.loc[s, "revenue"], agg.loc[s, "impressions"]) * 1000 for s in agg.index}
+        upside = max((rpm.get("team", 0) - rpm.get("fallback", 0)) / 1000 * fb_imp, 0)
+        down_h = 0
+        fh = data["fb_hourly"]
+        if not fh.empty:
+            tot_h = fh.groupby("hour")["impressions"].sum()
+            miss_h = fh[fh["fallback_reason"] == "missing"].groupby("hour")["impressions"].sum()
+            down_h = int(((miss_h.reindex(tot_h.index).fillna(0) / tot_h) > 0.5).sum())
+        if share > 0.03:
+            items.append((upside, "Evitar que el recommender s'aturi",
+                          f"La reserva ha atès el {pct(share)} dels carrusels"
+                          + (f", concentrats en {down_h} hores en què el recommender estava aturat" if down_h else "")
+                          + f". El nostre motor factura {eur(rpm.get('team', 0))} per 1.000 carrusels i la reserva "
+                            f"{eur(rpm.get('fallback', 0))}: atendre'ls nosaltres hauria aportat uns {eur(upside)}. "
+                            "Un procés que el reiniciï automàticament si cau ho evita."))
+    # 2. Tiquet mitjà respecte a l'històric
+    if h_ticket and ticket < h_ticket * 0.98:
+        loss = (h_ticket - ticket) * total_pur
+        why = (f"{P_IN[0].upper() + P_IN[1:]}, {eur(ticket, 2)} per compra davant de {eur(h_ticket, 2)} de l'històric "
+               f"({pct(safe_div(ticket, h_ticket) - 1)}); amb {num(total_pur)} compres, són uns {eur(loss)} menys.")
+        if pc_tot:
+            n_w = pc_tot["windows"]
+            why += (f" Coincideix amb {n_w} {'rebaixa' if n_w == 1 else 'rebaixes'} d'un {pct(pc_tot['discount'], 0)}: "
+                    f"{'revisa-la' if n_w == 1 else 'revisa-les'} a Rebaixes.")
+        items.append((loss, "Revisar què fa baixar el tiquet mitjà", why))
+    # 3. Conversió respecte a l'històric
+    if h_conv and conv < h_conv * 0.97:
+        lost_buys = (h_conv - conv) * org_views
+        items.append((lost_buys * ticket, "Investigar la caiguda de conversió",
+                      f"{pct(conv, 2)} de les vistes acaben en compra, davant del {pct(h_conv, 2)} habitual: "
+                      f"són unes {num(lost_buys)} compres menys. Mira si coincideix amb ruptures d'estoc a Gestió d'estoc."))
+    # 4. Geografia: on pesa més la categoria (o la combinació categoria × regió més destacada)
+    heat = data["heat_live"]
+    if not heat.empty and heat["purchases"].sum() > 0:
+        reg_tot = heat.groupby("region")["purchases"].sum()
+        cats = list(sel_cat) or heat.groupby("category")["purchases"].sum().sort_values(ascending=False).index.tolist()
+        best = None
+        for c in cats:
+            ch = heat[heat["category"] == c].groupby("region")["purchases"].sum().reindex(reg_tot.index).fillna(0)
+            g_share = safe_div(ch.sum(), reg_tot.sum())
+            if g_share <= 0:
+                continue
+            idx = (ch / reg_tot.replace(0, np.nan)) / g_share
+            idx = idx[reg_tot >= reg_tot.median() * 0.3].dropna()
+            if idx.empty:
+                continue
+            r = idx.idxmax()
+            if best is None or idx[r] > best[2]:
+                best = (c, r, idx[r], safe_div(ch[r], reg_tot[r]), g_share)
+        if best and best[2] > 1.1:
+            c, r, ix, s_r, s_g = best
+            items.append((ix * 1000, f"Reforçar l'estoc de {c} al magatzem de {r}",
+                          f"A {r}, {c} és el {pct(s_r)} de les compres, davant del {pct(s_g)} a la resta de la botiga "
+                          "(" + f"{ix:.1f}".replace(".", ",") + " vegades més). Distribuir l'estoc segons aquesta barreja redueix "
+                          "ruptures locals."))
+    # 5. Ruptures d'estoc
+    if lost_total > 0:
+        items.append((lost_total, "Prioritzar la reposició dels productes sense estoc",
+                      f"Les ruptures {P_OF} han costat {eur(lost_total)} en {num(n_oos_products)} productes "
+                      f"({num(n_now_oos)} encara sense estoc). La bombeta de Gestió d'estoc diu quins reposar primer."))
+    items.sort(key=lambda x: -x[0])
+    return [(a, w) for _, a, w in items[:4]]
+
+
+def advice_estoc(pv_prod: pd.DataFrame, oos: pd.DataFrame, page_cat: str) -> Advice:
+    if oos.empty:
+        return [("Mantenir les compres com fins ara",
+                 f"Cap producte d'aquest àmbit s'ha quedat sense estoc {P_IN}: el nivell de compra actual és suficient.")]
+    out: Advice = []
+    now_oos = oos[oos["currently_oos"]].sort_values("potential_rev_h", ascending=False)
+    if not now_oos.empty:
+        top = now_oos.head(3)
+        out.append((f"Reposar ja {'aquests productes' if len(now_oos) <= 3 else f'els {num(len(now_oos))} productes'} sense estoc",
+                    "Cada hora que estan sense estoc es deixen de facturar uns "
+                    f"{eur(now_oos['potential_rev_h'].sum())}. Comença per "
+                    + ", ".join(f"<b>{r.product_id}</b> ({r.category}, {eur(r.potential_rev_h)}/h)" for r in top.itertuples())
+                    + "."))
+    repeat = oos[oos["oos_count"] >= 2].sort_values("lost_revenue", ascending=False)
+    if not repeat.empty:
+        out.append((f"Augmentar el lot de compra de {num(len(repeat))} productes que es queden sense estoc sovint",
+                    f"Han trencat estoc 2 o més vegades {P_IN} i han perdut {eur(repeat['lost_revenue'].sum())} "
+                    f"({pct(safe_div(repeat['lost_revenue'].sum(), oos['lost_revenue'].sum()), 0)} de les pèrdues). "
+                    f"El lot actual no cobreix la demanda: el que més perd és <b>{repeat.iloc[0]['product_id']}</b> "
+                    f"({eur(repeat.iloc[0]['lost_revenue'])})."))
+    if page_cat == "Totes":
+        by_c = oos.groupby("category")["lost_revenue"].sum().sort_values(ascending=False)
+        if len(by_c) > 1 and by_c.iloc[0] > 0:
+            out.append((f"Començar la reposició per {by_c.index[0]}",
+                        f"Concentra el {pct(safe_div(by_c.iloc[0], by_c.sum()), 0)} dels ingressos perduts "
+                        f"({eur(by_c.iloc[0])}), per davant de {by_c.index[1]} ({eur(by_c.iloc[1])})."))
+    else:
+        cat_h = safe_div(oos["lost_revenue"].sum(), oos["oos_hours"].sum())
+        all_oos = products[products["oos_count"] > 0]
+        glob_h = safe_div(all_oos["lost_revenue"].sum(), all_oos["oos_hours"].sum())
+        if glob_h > 0:
+            rel = "més" if cat_h > glob_h else "menys"
+            out.append((f"{'Prioritzar' if cat_h > glob_h else 'No prioritzar'} aquesta categoria en la reposició",
+                        f"Una hora sense estoc aquí costa {eur(cat_h)}, {rel} que la mitjana de la botiga ({eur(glob_h)})."))
+    down = pv_prod[pv_prod["action"] == ACTION_DOWN]
+    if not down.empty:
+        out.append((f"Reduir la compra de {num(len(down))} productes",
+                    "No s'han quedat mai sense estoc i són al 20 % amb menys demanda: es pot comprar menys quantitat "
+                    "sense risc de perdre vendes. Són a la Llista de reposició, acció «Reduir compra»."))
+    return out[:4]
+
+
+def advice_rebaixes() -> Advice:
+    if pc_long.empty or pc_by.empty:
+        return [("No treure conclusions sobre rebaixes en aquest àmbit",
+                 f"Cap rebaixa amb prou dades ha començat {P_IN} amb aquests filtres: no se'n pot mesurar l'efecte.")]
+    tb = pc_by.copy()
+    tb["dU"] = tb["obs_units_durant"] - tb["exp_units_durant"]
+    tb["dR"] = tb["obs_rev_durant"] - tb["exp_rev_durant"]
+    tb["u_dur"] = tb["obs_units_durant"] / tb["exp_units_durant"].replace(0, np.nan) - 1
+    tb["u_aft"] = tb["obs_units_després"] / tb["exp_units_després"].replace(0, np.nan) - 1
+    tb = tb[tb["exp_units_durant"] > 0]
+    items: List[Tuple[float, str, str]] = []
+    for r in tb.itertuples():
+        kind, val = cost_threshold(r.dR, r.dU, r.sale_price)
+        if kind == "never":
+            items.append((abs(r.dR) + 1e6, f"No repetir la rebaixa a {r.category}",
+                          f"Ven un {pct(r.u_dur, 0)} més d'unitats, però factura {eur(abs(r.dR))} menys del que hauria "
+                          "facturat sense rebaixa: cap cost de producte la fa rendible."))
+        elif kind == "below":
+            items.append((r.dR, f"Repetir la rebaixa a {r.category} només si cada producte costa menys de {eur(val, 2)}",
+                          f"Durant la rebaixa ven un {pct(r.u_dur, 0)} més i factura {eur(r.dR)} més. Per sobre de "
+                          f"{eur(val, 2)} de cost per unitat ({pct(safe_div(val, r.sale_price), 0)} del preu de venda), "
+                          "perd diners."))
+        if np.isfinite(r.u_aft) and r.u_aft < -0.07:
+            items.append((abs(r.u_aft) * 1e5, f"Escurçar o espaiar les rebaixes a {r.category}",
+                          f"En tornar al preu original ven un {pct(abs(r.u_aft), 0)} menys del normal durant "
+                          f"{HANGOVER_H:.0f} h: la rebaixa avança compres que s'haurien fet igualment, en lloc de crear-ne de noves."))
+    items.sort(key=lambda x: -x[0])
+    out = [(a, w) for _, a, w in items[:3]]
+    if not store.empty and pd.notna(pc_tot.get("first_start")):
+        sl = store.groupby("slot")["purchases"].sum()
+        pre_s, post_s = sl[sl.index < pc_tot["first_start"]], sl[sl.index >= pc_tot["first_start"]]
+        if not pre_s.empty and not post_s.empty and abs(safe_div(post_s.mean(), pre_s.mean()) - 1) < 0.03:
+            out.append(("Fer servir les rebaixes per moure estoc concret, no per fer créixer les vendes",
+                        f"Les compres totals de la botiga no canvien amb les rebaixes ({num(pre_s.mean())} per franja "
+                        f"abans i {num(post_s.mean())} després): les rebaixes només desplacen compres d'uns productes a uns altres."))
+    return out[:4]
+
+
+def advice_mort() -> Advice:
+    if dead.empty:
+        return [("Mantenir l'assortiment",
+                 f"Cap producte actiu ha passat {dead_days} dies sense vendes ni intenció de compra.")]
+    out: Advice = []
+    looked = dead[dead["dead_type"] == TYPE_LOOKED].sort_values("exp_sales", ascending=False)
+    unseen = dead[dead["dead_type"] == TYPE_UNSEEN]
+    if not looked.empty:
+        out.append((f"Provar una rebaixa en {num(len(looked))} productes que es miren però no es compren",
+                    f"Amb les seves vistes n'haurien d'haver venut unes {num(looked['exp_sales'].sum())} unitats i no "
+                    "n'han venut cap: alguna cosa (sovint el preu) frena la compra. Comença per "
+                    + ", ".join(f"<b>{r.product_id}</b> ({num(r.views_win)} vistes)" for r in looked.head(3).itertuples())
+                    + ". Si rebaixats tampoc es venen, retira'ls."))
+    if not unseen.empty:
+        out.append((f"Deixar de comprar {num(len(unseen))} productes que gairebé ningú mira",
+                    f"Tenen massa poques vistes per vendre's: no hi ha demanda que justifiqui tenir-los al magatzem."))
+    if not sel_cat:
+        by_c = dead["category"].value_counts()
+        share = safe_div(by_c.iloc[0], len(dead))
+        if share > 0.2:
+            out.append((f"Revisar l'assortiment de {by_c.index[0]}",
+                        f"Concentra {num(by_c.iloc[0])} dels {num(len(dead))} productes en alerta ({pct(share, 0)}): "
+                        "potser hi ha massa referències per a la demanda que té."))
+    else:
+        share = safe_div(len(dead), n_active)
+        out.append((f"{'Revisar' if share > 0.08 else 'Mantenir'} l'assortiment d'aquesta categoria",
+                    f"El {pct(share)} dels seus productes actius estan en alerta"
+                    + (", per sobre del que seria raonable." if share > 0.08 else ", una proporció baixa.")))
+    return out[:4]
+
+
+def render_advice(theme: str, scope: str, items: Advice) -> None:
+    """Bombeta fixa a baix a la dreta; en clicar-la mostra les accions recomanades."""
+    with st.container(key="advice_box"):
+        with st.popover("💡", help="Acció recomanada amb les dades i els filtres actuals"):
+            st.markdown(f"<div class='adv-title'>Acció recomanada · {theme}</div>"
+                        f"<div class='adv-scope'>Àmbit: {scope} · dades de les {now:%H:%M} UTC</div>",
+                        unsafe_allow_html=True)
+            if not items:
+                st.markdown("<div class='adv-item'>Cap acció destacada amb aquests filtres.</div>", unsafe_allow_html=True)
+            for i, (act, why) in enumerate(items, start=1):
+                st.markdown(f"<div class='adv-item'><div class='adv-act'>{i}. {act}</div>"
+                            f"<div class='adv-why'>{why}</div></div>", unsafe_allow_html=True)
+
+
+ADVICE = None   # (tema, àmbit, accions): cada pantalla de detall l'omple
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1210,7 +1536,7 @@ if view == "home":
     row2 = st.columns(2, gap="medium")
 
     # ── Retorn ──
-    with tile(row1[0], "retorn", "Retorn econòmic · avui", "retorn"):
+    with tile(row1[0], "retorn", f"Retorn econòmic · {period}", "retorn"):
         a, b = st.columns([1.25, 1])
         org_share = safe_div(org_rev, total_rev)
         a.markdown(
@@ -1255,7 +1581,8 @@ if view == "home":
                 f"<div class='big {'up' if (pc_lift or 0) >= 0 else 'down'}'>{fmt_lift(pc_lift)}</div>"
                 f"<div class='sub'>respecte a l'esperat sense rebaixa</div><br>"
                 f"<div class='big-label'>Rebaixa mitjana</div><div class='big' style='font-size:1.7rem'>−{pct(pc_tot['discount'])}</div>"
-                f"<div class='sub'><b>{pc_tot['windows']}</b> rebaixes de 2 h · <b>{num(pc_tot['products'])}</b> productes</div><br>"
+                f"<div class='sub'><b>{pc_tot['windows']}</b> {'rebaixa' if pc_tot['windows'] == 1 else 'rebaixes'} de {pc_dur:.0f} h · "
+                f"<b>{num(pc_tot['products'])}</b> productes</div><br>"
                 f"<div class='big-label'>Cost màxim per guanyar diners</div>"
                 f"<div class='big' style='font-size:1.4rem'>{cost_short(pc_kind, pc_val)}</div>",
                 unsafe_allow_html=True)
@@ -1263,7 +1590,7 @@ if view == "home":
                 st.plotly_chart(fig_discount_index(pc_idx, 320, compact=True, dur=pc_dur), width="stretch", config=PLOT_CFG,
                                 key="home_idx")
         else:
-            st.info("No hi ha rebaixes amb prou dades per a aquests filtres.")
+            st.info(f"Cap rebaixa amb prou dades ha començat {P_IN} amb aquests filtres.")
 
     # ── Estoc mort ──
     with tile(row2[1], "mort", f"Estoc mort · últims {dead_days} dies", "mort"):
@@ -1282,6 +1609,7 @@ if view == "home":
 # DETALL · RETORN ECONÒMIC
 # ══════════════════════════════════════════════════════════════════════════════
 elif view == "retorn":
+    ADVICE = ("Retorn econòmic", scope_label(), advice_retorn())
     warn_errors(errors, ["live", "feedback", "hist", "store", "fb_hourly"])
     tabs = st.tabs(["Vendes i conversió", "Nostre motor vs reserva", "Geografia: categoria × regió"])
 
@@ -1393,11 +1721,11 @@ elif view == "retorn":
 
     with tabs[2]:
         h1, h2, h3, _ = st.columns([1.6, 1.8, 1.6, 2])
-        src = h1.radio("Període", ["Avui (en viu)", "Històric 60 dies"], horizontal=True, key="heat_src")
+        src = h1.radio("Dades", [f"{period}", "Històric 60 dies"], horizontal=True, key="heat_src")
         metric = h2.radio("Mètrica", ["Compres", "Facturació", "Conversió"], horizontal=True, key="heat_metric")
         normalize = h3.toggle("% sobre el total de cada regió", value=False, key="heat_norm",
                               help="Mostra la barreja de categories de cada regió en lloc dels volums absoluts.")
-        heat = data["heat_live"] if src.startswith("Avui") else data["heat_hist"]
+        heat = data["heat_hist"] if src.startswith("Històric") else data["heat_live"]
         if sel_cat and not heat.empty:
             heat = heat[heat["category"].isin(sel_cat)]
         if heat.empty:
@@ -1444,10 +1772,11 @@ elif view == "estoc":
                             on_change=remember, args=("estoc_cat_w", "estoc_cat_v"))
     pv_prod = products if page_cat == "Totes" else products[products["category"] == page_cat]
     oos = pv_prod[pv_prod["oos_count"] > 0]
+    ADVICE = ("Gestió d'estoc", scope_label(None if page_cat == "Totes" else page_cat), advice_estoc(pv_prod, oos, page_cat))
     lost = oos["lost_revenue"].sum()
     eur_per_h = safe_div(lost, oos["oos_hours"].sum())
     for col, card in zip(kcols, [
-        kpi_card("Ingressos perduts", eur(lost), f"per ruptures d'avui · {page_cat.lower() if page_cat != 'Totes' else 'totes les categories'}", tone="down"),
+        kpi_card("Ingressos perduts", eur(lost), f"per ruptures {P_OF} · {page_cat.lower() if page_cat != 'Totes' else 'totes les categories'}", tone="down"),
         kpi_card("Cost d'una hora sense estoc", eur(eur_per_h, 0) + "/h",
                  "mitjana del que es deixa de vendre per producte i hora"),
         kpi_card("Productes amb ruptures", num(len(oos)), f"<b class='down'>{num(int(oos['currently_oos'].sum()))}</b> ara sense estoc"),
@@ -1510,7 +1839,7 @@ elif view == "estoc":
                                    text=r.product_id, showarrow=True, arrowhead=0, arrowcolor=C["muted"], ax=34, ay=-18,
                                    font=dict(size=10, color=C["text"]))
             style_fig(fig, height=600, margin=dict(l=8, r=8, t=36, b=8))
-            fig.update_xaxes(title="Vegades sense estoc avui", tickmode="linear", dtick=1,
+            fig.update_xaxes(title=f"Vegades sense estoc {P_IN}", tickmode="linear", dtick=1,
                              range=[0.5, float(oos["oos_count"].max()) + 0.5])
             fig.update_yaxes(title="Facturació potencial (€/h amb estoc)", type="log" if log_y else "linear")
             st.plotly_chart(fig, width="stretch", config=PLOT_CFG)
@@ -1557,9 +1886,11 @@ elif view == "estoc":
 # DETALL · REBAIXES
 # ══════════════════════════════════════════════════════════════════════════════
 elif view == "rebaixes":
+    ADVICE = ("Rebaixes", scope_label(), advice_rebaixes())
     warn_errors(errors, ["pc_events", "pc_sales", "store"])
     if pc_long.empty:
-        st.info("No hi ha rebaixes amb prou dades per analitzar-les amb aquests filtres.")
+        st.info(f"Cap rebaixa amb prou dades ha començat {P_IN} amb aquests filtres. "
+                "Prova el període «Tot l'esdeveniment» per veure-les totes.")
     else:
         closed = pc_win[~pc_win["open"]]
         dur_h = (closed["end"] - closed["start"]).dt.total_seconds().mean() / 3600 if not closed.empty else np.nan
@@ -1592,7 +1923,7 @@ elif view == "rebaixes":
                 st.markdown(
                     "<div class='note'><b>Com es calcula l'esperat.</b> Pes dels productes rebaixats respecte als que no "
                     "s'han rebaixat mai, mesurat a totes les franges a preu normal, aplicat a les vendes d'aquests últims "
-                    "a cada franja. Així es neteja l'efecte dels productes nous d'avui, que prenen quota al catàleg.</div>",
+                    "a cada franja. Així es neteja l'efecte dels productes nous de l'esdeveniment, que prenen quota al catàleg.</div>",
                     unsafe_allow_html=True)
                 if not store.empty and pd.notna(pc_tot.get("first_start")):
                     t0 = pc_tot["first_start"]
@@ -1687,6 +2018,7 @@ elif view == "rebaixes":
 # DETALL · ESTOC MORT
 # ══════════════════════════════════════════════════════════════════════════════
 elif view == "mort":
+    ADVICE = ("Estoc mort", scope_label(extra=f"últims {dead_days} dies", with_period=False), advice_mort())
     warn_errors(errors, ["live_all", "hist_all", "clicks_all"])
     s1, s2, *kcols = st.columns([1.2, 1.2, 1, 1, 1])
     s1.slider("Finestra (dies)", 3, 30, dead_days, key="dead_days_w", on_change=remember,
@@ -1772,3 +2104,7 @@ elif view == "mort":
                     "h_purchases": st.column_config.NumberColumn("Vendes 60 d", format="%d"),
                     "created_at": st.column_config.DatetimeColumn("Alta", format="DD/MM/YYYY"),
                 })
+
+# ── Bombeta de consell (només a les pantalles de detall) ──────────────────────
+if ADVICE is not None:
+    render_advice(*ADVICE)
