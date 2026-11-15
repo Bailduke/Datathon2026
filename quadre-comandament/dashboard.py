@@ -1062,9 +1062,19 @@ st.set_page_config(page_title="Quadre econòmic i de magatzem", page_icon="📦"
                    initial_sidebar_state="collapsed")
 st.markdown(CSS, unsafe_allow_html=True)
 
+# Les dades es consulten en obrir (o recarregar) la pàgina i queden congelades per a tota la sessió: navegar
+# entre pantalles no torna a consultar RawTree. Només s'actualitzen amb F5 o amb el botó ⟳.
+if "_session_started" not in st.session_state:
+    st.session_state["_session_started"] = True
+    st.session_state["_snap"] = {}    # (regions, dispositius, dies d'estoc mort) → dades consultades
+    st.session_state["_memo"] = {}    # càlculs derivats de cada instantània
+    st.cache_data.clear()             # una sessió nova no reaprofita dades d'una sessió anterior
+
 try:
     backend, _ = _backend()
-    dims = q_dimensions()
+    if "_dims" not in st.session_state:          # opcions dels filtres, també congelades per sessió
+        st.session_state["_dims"] = q_dimensions()
+    dims = st.session_state["_dims"]
 except Exception as exc:
     st.error(f"No s'ha pogut connectar a RawTree. Revisa el fitxer .env (TEAM_ID, RAWTREE_API_KEY).\n\n{exc}")
     st.stop()
@@ -1079,27 +1089,34 @@ if view not in VIEWS:
 bar = st.columns([3.4, 2.1, 2.1, 1.4, 0.45], vertical_alignment="center", gap="small")
 with bar[0]:
     if view == "home":
-        st.markdown(f"<div class='app-eyebrow'>Datathon FME 2026 · RawTree · {TEAM} · connexió: {backend}</div>"
-                    "<div class='app-title'>Quadre econòmic i de magatzem</div>", unsafe_allow_html=True)
+        head_ph = st.empty()
     else:
         b1, b2 = st.columns([1, 3.3], vertical_alignment="center")
         b1.button("← Tornar", key="back", on_click=go_to, args=("home",), width="stretch")
-        b2.markdown(f"<div class='app-eyebrow'>Quadre econòmic i de magatzem</div>"
-                    f"<div class='app-title'>{VIEWS[view]}</div>", unsafe_allow_html=True)
+        head_ph = b2.empty()
 sel_cat = tuple(bar[1].multiselect("Categoria", dims["category"], key="f_cat", placeholder="Totes les categories",
                                    label_visibility="collapsed"))
 sel_reg = tuple(bar[2].multiselect("Regió", dims["region"], key="f_reg", placeholder="Totes les regions",
                                    label_visibility="collapsed"))
 sel_dev = tuple(bar[3].multiselect("Dispositiu", dims["device"], key="f_dev", placeholder="Tots els dispositius",
                                    label_visibility="collapsed"))
-if bar[4].button("⟳", key="refresh", help="Refrescar les dades (les consultes es guarden 30 s)", width="stretch"):
+if bar[4].button("⟳", key="refresh", help="Tornar a consultar les dades a RawTree (també ho fa recarregar la pàgina)",
+                 width="stretch"):
+    st.session_state["_snap"] = {}
+    st.session_state["_memo"] = {}
+    st.session_state.pop("_dims", None)
     st.cache_data.clear()
     st.rerun()
 
 # ── Càrrega en paral·lel ─────────────────────────────────────────────────────
 dead_days = int(st.session_state.get("dead_days_v", 7))
 dead_max_sales = int(st.session_state.get("dead_max_v", 0))
-with st.spinner("Consultant RawTree…"):
+snap_key = (sel_reg, sel_dev, dead_days)
+_snaps = st.session_state.setdefault("_snap", {})
+if snap_key in _snaps:
+    data, errors = _snaps[snap_key]
+else:
+  with st.spinner("Consultant RawTree…"):
     data, errors = prefetch({
         "windows": (q_windows, ()),
         "catalog": (q_catalog, ()),
@@ -1120,6 +1137,8 @@ with st.spinner("Consultant RawTree…"):
         "pc_sales": (q_price_change_sales, (sel_reg, sel_dev)),
         "store": (q_store_slots, (sel_reg, sel_dev)),
     })
+  if not errors:   # una càrrega amb errors no es congela: es torna a provar en el següent clic
+      _snaps[snap_key] = (data, errors)
 
 win = data["windows"]
 if win.empty or pd.isna(win.iloc[0].get("now")):
@@ -1139,67 +1158,82 @@ if cat.empty:
     st.stop()
 cat_of = cat.set_index("product_id")["category"]
 
-# ── Càlculs compartits ───────────────────────────────────────────────────────
-stock = stockout_metrics(data["stock"], live_start, now)
-products = build_product_table(cat, data["live"], data["hist"], data["clicks"], stock, live_hours, hist_hours)
-if sel_cat:
-    products = products[products["category"].isin(sel_cat)]
+head_html = (f"<div class='app-eyebrow'>Datathon FME 2026 · RawTree · {TEAM} · dades de les {now:%H:%M} UTC "
+             f"(F5 o ⟳ per actualitzar)</div>")
+head_ph.markdown(head_html + f"<div class='app-title'>{VIEWS[view] if view != 'home' else 'Quadre econòmic i de magatzem'}</div>",
+                 unsafe_allow_html=True)
 
-fb = data["feedback"].copy()
-if not fb.empty:
-    fb["purchased_cat"] = fb["purchased"].map(cat_of)
-    fb_sales = fb[fb["purchased"] != ""]
-    if sel_cat:
-        fb_sales = fb_sales[fb_sales["purchased_cat"].isin(sel_cat)]
-else:
-    fb_sales = fb
-org_rev, org_pur, org_views = products["revenue"].sum(), products["purchases"].sum(), products["views"].sum()
-car_rev = fb_sales["revenue"].sum() if not fb_sales.empty else 0.0
-car_pur = fb_sales["purchases"].sum() if not fb_sales.empty else 0.0
-total_rev, total_pur = org_rev + car_rev, org_pur + car_pur
-ticket, conv = safe_div(total_rev, total_pur), safe_div(org_pur, org_views)
-h_ticket = safe_div(products["h_revenue"].sum(), products["h_purchases"].sum())
-h_conv = safe_div(products["h_purchases"].sum(), products["h_views"].sum())
-lost_total = products["lost_revenue"].sum()
-n_oos_products = int((products["oos_count"] > 0).sum())
-n_now_oos = int(products["currently_oos"].sum())
 
-store = data["store"]
-if not store.empty:
-    store = store[(store["slot"] >= live_start.floor("30min")) & (store["slot"] + timedelta(minutes=30) <= now)]
-store_cat = store[store["category"].isin(sel_cat)] if (sel_cat and not store.empty) else store
-org_slots = (store_cat.groupby("slot")[["revenue", "purchases"]].sum().reset_index()
-             if not store_cat.empty else pd.DataFrame(columns=["slot", "revenue", "purchases"]))
+# ── Càlculs compartits (es fan un sol cop per instantània i filtre de categoria) ─
+def compute_shared() -> Dict[str, Any]:
+  stock = stockout_metrics(data["stock"], live_start, now)
+  products = build_product_table(cat, data["live"], data["hist"], data["clicks"], stock, live_hours, hist_hours)
+  if sel_cat:
+      products = products[products["category"].isin(sel_cat)]
 
-dead = build_product_table(cat, data["live_all"], data["hist_all"], data["clicks_all"], stock, live_hours, hist_hours)
-if sel_cat:
-    dead = dead[dead["category"].isin(sel_cat)]
-n_active = int(dead["is_active"].sum())
-dead["sales_win"] = dead["r_purchases"] + dead["purchases"]
-dead["carts_win"] = dead["r_carts"] + dead["carts"]
-dead["views_win"] = dead["r_views"] + dead["views"]
-# Conversió típica de cada categoria a la finestra (vendes ÷ vistes de tots els productes actius).
-_act = dead[dead["is_active"]]
-cat_conv = (_act.groupby("category")["sales_win"].sum() / _act.groupby("category")["views_win"].sum().replace(0, np.nan)).fillna(0.0)
-overall_conv = safe_div(_act["sales_win"].sum(), _act["views_win"].sum())
-too_new = dead["created_at"].notna() & (dead["created_at"] > now - timedelta(days=dead_days))
-dead = dead[dead["is_active"] & ~too_new & (dead["sales_win"] <= dead_max_sales)
-            & (dead["carts_win"] <= max(dead_max_sales, 1)) & (dead["carousel_clicks"] == 0)].copy()
-# Vendes que s'esperarien amb les seves vistes i la conversió de la categoria. Si n'esperàvem ≥ 3 i no se n'ha venut
-# cap, no és mala sort (P < 5 %): alguna cosa frena la compra. Si n'esperàvem menys, té massa poques vistes per jutjar.
-dead["exp_sales"] = dead["views_win"] * dead["category"].map(cat_conv).fillna(overall_conv)
-dead["dead_type"] = np.where(dead["exp_sales"] >= DEAD_EXPECTED_MIN, TYPE_LOOKED, TYPE_UNSEEN)
+  fb = data["feedback"].copy()
+  if not fb.empty:
+      fb["purchased_cat"] = fb["purchased"].map(cat_of)
+      fb_sales = fb[fb["purchased"] != ""]
+      if sel_cat:
+          fb_sales = fb_sales[fb_sales["purchased_cat"].isin(sel_cat)]
+  else:
+      fb_sales = fb
+  org_rev, org_pur, org_views = products["revenue"].sum(), products["purchases"].sum(), products["views"].sum()
+  car_rev = fb_sales["revenue"].sum() if not fb_sales.empty else 0.0
+  car_pur = fb_sales["purchases"].sum() if not fb_sales.empty else 0.0
+  total_rev, total_pur = org_rev + car_rev, org_pur + car_pur
+  ticket, conv = safe_div(total_rev, total_pur), safe_div(org_pur, org_views)
+  h_ticket = safe_div(products["h_revenue"].sum(), products["h_purchases"].sum())
+  h_conv = safe_div(products["h_purchases"].sum(), products["h_views"].sum())
+  lost_total = products["lost_revenue"].sum()
+  n_oos_products = int((products["oos_count"] > 0).sum())
+  n_now_oos = int(products["currently_oos"].sum())
 
-pc_long, pc_by, pc_win, pc_tot = price_change_analysis(data["pc_events"], data["pc_sales"], sel_cat, live_start, now)
-pc_idx = discount_index(pc_long, pc_win)
-if pc_tot:
-    pc_dU = pc_tot["obs_units_durant"] - pc_tot["exp_units_durant"]
-    pc_dR = pc_tot["obs_rev_durant"] - pc_tot["exp_rev_durant"]
-    pc_lift = safe_div(pc_tot["obs_units_durant"], pc_tot["exp_units_durant"]) - 1 if pc_tot["exp_units_durant"] else None
-    pc_kind, pc_val = cost_threshold(pc_dR, pc_dU, pc_tot["sale_price"])
-else:
-    pc_dU = pc_dR = 0.0
-    pc_lift, pc_kind, pc_val = None, "never", np.nan
+  store = data["store"]
+  if not store.empty:
+      store = store[(store["slot"] >= live_start.floor("30min")) & (store["slot"] + timedelta(minutes=30) <= now)]
+  store_cat = store[store["category"].isin(sel_cat)] if (sel_cat and not store.empty) else store
+  org_slots = (store_cat.groupby("slot")[["revenue", "purchases"]].sum().reset_index()
+               if not store_cat.empty else pd.DataFrame(columns=["slot", "revenue", "purchases"]))
+
+  dead = build_product_table(cat, data["live_all"], data["hist_all"], data["clicks_all"], stock, live_hours, hist_hours)
+  if sel_cat:
+      dead = dead[dead["category"].isin(sel_cat)]
+  n_active = int(dead["is_active"].sum())
+  dead["sales_win"] = dead["r_purchases"] + dead["purchases"]
+  dead["carts_win"] = dead["r_carts"] + dead["carts"]
+  dead["views_win"] = dead["r_views"] + dead["views"]
+  # Conversió típica de cada categoria a la finestra (vendes ÷ vistes de tots els productes actius).
+  _act = dead[dead["is_active"]]
+  cat_conv = (_act.groupby("category")["sales_win"].sum() / _act.groupby("category")["views_win"].sum().replace(0, np.nan)).fillna(0.0)
+  overall_conv = safe_div(_act["sales_win"].sum(), _act["views_win"].sum())
+  too_new = dead["created_at"].notna() & (dead["created_at"] > now - timedelta(days=dead_days))
+  dead = dead[dead["is_active"] & ~too_new & (dead["sales_win"] <= dead_max_sales)
+              & (dead["carts_win"] <= max(dead_max_sales, 1)) & (dead["carousel_clicks"] == 0)].copy()
+  # Vendes que s'esperarien amb les seves vistes i la conversió de la categoria. Si n'esperàvem ≥ 3 i no se n'ha venut
+  # cap, no és mala sort (P < 5 %): alguna cosa frena la compra. Si n'esperàvem menys, té massa poques vistes per jutjar.
+  dead["exp_sales"] = dead["views_win"] * dead["category"].map(cat_conv).fillna(overall_conv)
+  dead["dead_type"] = np.where(dead["exp_sales"] >= DEAD_EXPECTED_MIN, TYPE_LOOKED, TYPE_UNSEEN)
+
+  pc_long, pc_by, pc_win, pc_tot = price_change_analysis(data["pc_events"], data["pc_sales"], sel_cat, live_start, now)
+  pc_idx = discount_index(pc_long, pc_win)
+  if pc_tot:
+      pc_dU = pc_tot["obs_units_durant"] - pc_tot["exp_units_durant"]
+      pc_dR = pc_tot["obs_rev_durant"] - pc_tot["exp_rev_durant"]
+      pc_lift = safe_div(pc_tot["obs_units_durant"], pc_tot["exp_units_durant"]) - 1 if pc_tot["exp_units_durant"] else None
+      pc_kind, pc_val = cost_threshold(pc_dR, pc_dU, pc_tot["sale_price"])
+  else:
+      pc_dU = pc_dR = 0.0
+      pc_lift, pc_kind, pc_val = None, "never", np.nan
+  return {k: v for k, v in locals().items() if not k.startswith("_")}
+
+
+_memo = st.session_state.setdefault("_memo", {})
+_memo_key = (snap_key, sel_cat, dead_max_sales)
+if _memo_key not in _memo:
+    _memo[_memo_key] = compute_shared()
+globals().update(_memo[_memo_key])   # products, dead, pc_* ... per a les pantalles
 
 
 def cost_short(kind: str, value: float) -> str:
