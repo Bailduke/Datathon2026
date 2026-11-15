@@ -64,7 +64,6 @@ TEAM = os.getenv("TEAM_ID") or os.getenv("RAWTREE_TEAM") or "team_03"
 # ── Recommenders de l'equip (carpeta tengo-aurilla-v0, al costat d'aquest projecte) ──
 AURILLA_DIR = os.path.join(os.path.dirname(ROOT), "tengo-aurilla-v0")
 _VERSION_FILE = re.compile(r"recommender-v(\d+)\.py$")
-_MODEL_VERSION = re.compile(r'model_version:\s*str\s*=\s*"([^"]+)"')
 
 
 def recommender_files() -> List[Tuple[int, str]]:
@@ -75,31 +74,6 @@ def recommender_files() -> List[Tuple[int, str]]:
         if m:
             out.append((int(m.group(1)), path))
     return sorted(out)
-
-
-# Etiquetes amb què s'ha llançat un recommender en viu diferents de la del seu fitxer (amb --set model_version=...).
-# Font: tengo-aurilla-v0/modelo-neta-trend.tex (prova A/B: dos processos v6 idèntics, φ = 0 al control).
-MODEL_ALIASES: Dict[str, str] = {
-    "transformada-neta-trend": "v6",   # v6 amb tendència
-    "transformada-neta-ctrl": "v6",    # v6 control, sense tendència
-}
-
-
-def recommender_labels() -> Dict[str, str]:
-    """model_version (el que escriu cada recommender a RawTree) → nom del fitxer (v4, v5, v6...)."""
-    labels: Dict[str, str] = {}
-    files = recommender_files()
-    for v, path in files:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                m = _MODEL_VERSION.search(fh.read())
-            if m:
-                labels[m.group(1)] = f"v{v}"
-        except OSError:
-            pass
-    existing = {f"v{v}" for v, _ in files}
-    labels.update({mv: lab for mv, lab in MODEL_ALIASES.items() if lab in existing})
-    return labels
 
 
 def _load_latest_recommender():
@@ -516,33 +490,6 @@ def q_store_slots(regions: Tuple[str, ...], devices: Tuple[str, ...]) -> pd.Data
     df = _num(df, ["purchases", "new_purchases", "revenue"])
     df["slot"] = pd.to_datetime(df["slot"], errors="coerce")
     return df.sort_values("slot")
-
-
-@st.cache_data(ttl=30, show_spinner=False)
-def q_feedback_models(regions: Tuple[str, ...], devices: Tuple[str, ...]) -> pd.DataFrame:
-    """Resultats del carrusel per versió del recommender (model_version que escriu cada recommender)."""
-    frm, where = _feedback_from(regions, devices)
-    df = run_sql(
-        f"""
-        SELECT f.model_version::String AS model_version, f.served_by::String AS served_by,
-               count() AS impressions,
-               countIf(f.clicked::String != '')   AS clicks,
-               countIf(f.purchased::String != '') AS purchases,
-               sum(f.revenue_eur::Float64)        AS revenue,
-               quantileIf(0.5)(f.latency_ms::Float64, f.served_by::String = 'team') AS latency_p50,
-               toString(min(f.ts::DateTime64(3))) AS first_ts,
-               toString(max(f.ts::DateTime64(3))) AS last_ts
-        FROM {frm}
-        WHERE {where}
-        GROUP BY model_version, served_by
-        """
-    )
-    df = _ensure(df, ["model_version", "served_by", "impressions", "clicks", "purchases", "revenue",
-                      "latency_p50", "first_ts", "last_ts"])
-    df = _num(df, ["impressions", "clicks", "purchases", "revenue", "latency_p50"])
-    for c in ("first_ts", "last_ts"):
-        df[c] = pd.to_datetime(df[c], errors="coerce")
-    return df
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -1127,7 +1074,6 @@ else:
         "hist": (q_hist_products, (sel_reg, sel_dev, dead_days)),
         "feedback": (q_feedback, (sel_reg, sel_dev)),
         "fb_hourly": (q_feedback_hourly, (sel_reg, sel_dev)),
-        "fb_models": (q_feedback_models, (sel_reg, sel_dev)),
         "clicks": (q_carousel_clicks, (sel_reg, sel_dev)),
         # L'estoc mort és global de magatzem: no depèn de regió ni dispositiu (caché compartida si no hi ha filtres).
         "live_all": (q_live_products, ((), ())),
@@ -1337,8 +1283,7 @@ if view == "home":
 # ══════════════════════════════════════════════════════════════════════════════
 elif view == "retorn":
     warn_errors(errors, ["live", "feedback", "hist", "store", "fb_hourly"])
-    tabs = st.tabs(["Vendes i conversió", "Nostre motor vs reserva", "Versions del recommender",
-                    "Geografia: categoria × regió"])
+    tabs = st.tabs(["Vendes i conversió", "Nostre motor vs reserva", "Geografia: categoria × regió"])
 
     with tabs[0]:
         kpi_row([
@@ -1447,96 +1392,6 @@ elif view == "retorn":
                 + "</div>", unsafe_allow_html=True)
 
     with tabs[2]:
-        fm = data["fb_models"]
-        warn_errors(errors, ["fb_models"])
-        labels = recommender_labels()
-        files = recommender_files()
-        latest_lab = f"v{files[-1][0]}" if files else None
-        latest_mvs = [mv for mv, lab in labels.items() if lab == latest_lab]
-        team_m = fm[fm["served_by"] == "team"].copy() if not fm.empty else pd.DataFrame()
-        if team_m.empty:
-            st.info("Encara no hi ha respostes del nostre motor per als filtres seleccionats.")
-        else:
-            late = fm[fm["served_by"] == "fallback"].groupby("model_version")["impressions"].sum()
-            team_m["late"] = team_m["model_version"].map(late).fillna(0.0)
-            team_m["served_share"] = team_m["impressions"] / (team_m["impressions"] + team_m["late"])
-            # Les peticions sense cap resposta no porten versió: no es poden atribuir a cap model.
-            team_m.loc[team_m["model_version"] == "", "served_share"] = np.nan
-            team_m["rpm"] = team_m["revenue"] / team_m["impressions"].replace(0, np.nan) * 1000
-            team_m["ctr"] = team_m["clicks"] / team_m["impressions"].replace(0, np.nan)
-            team_m["conv"] = team_m["purchases"] / team_m["impressions"].replace(0, np.nan)
-            team_m["file"] = team_m["model_version"].map(labels).fillna("")
-            team_m["name"] = [f"{f} · {mv}" if f else (mv or "baseline (sense etiqueta)")
-                              for f, mv in zip(team_m["file"], team_m["model_version"])]
-            team_m["period"] = [f"{a:%d/%m %H:%M} – {b:%H:%M}" for a, b in zip(team_m["first_ts"], team_m["last_ts"])]
-            team_m = team_m.sort_values("first_ts")
-            active_cut = now - timedelta(minutes=10)
-            team_m["status"] = np.where(team_m["last_ts"] >= active_cut, "🟢 En marxa", "Aturat")
-
-            c1, c2 = st.columns([1.35, 1])
-            with c1:
-                d = team_m.iloc[::-1]
-                colors = [C["team"] if f else C["neutral"] for f in d["file"]]
-                fig = go.Figure(go.Bar(
-                    x=d["rpm"], y=d["name"], orientation="h", marker_color=colors, marker_line_width=0,
-                    text=[eur(v, 0) for v in d["rpm"]], textposition="outside", cliponaxis=False,
-                    textfont=dict(color=C["text"]),
-                    customdata=np.stack([d["impressions"], d["period"], d["status"]], axis=-1),
-                    hovertemplate=("<b>%{y}</b><br>%{x:,.0f} € per 1.000 impressions<br>%{customdata[0]:,.0f} "
-                                   "impressions · %{customdata[1]}<br>%{customdata[2]}<extra></extra>")))
-                style_fig(fig, height=400, legend=False, margin=dict(l=8, r=50, t=34, b=8))
-                fig.update_layout(title=dict(text="Facturació per cada 1.000 carrusels mostrats, per versió", x=0,
-                                             font=dict(size=13, color=C["text"])))
-                fig.update_xaxes(showticklabels=False, showgrid=False, range=[0, float(d["rpm"].max()) * 1.25])
-                fig.update_yaxes(showgrid=False)
-                st.plotly_chart(fig, width="stretch", config=PLOT_CFG)
-            with c2:
-                rec_txt = (f"El dashboard es connecta a RawTree amb el client de <b>{backend}</b>."
-                           if backend.startswith("tengo-aurilla") else
-                           f"No s'ha pogut fer servir el client de tengo-aurilla-v0; connexió: <b>{backend}</b>.")
-                files_txt = "; ".join(
-                    f"<b>v{v}</b> → " + ", ".join(f"<code>{mv}</code>" for mv, lab in labels.items() if lab == f"v{v}")
-                    for v, _ in files if any(lab == f"v{v}" for lab in labels.values()))
-                latest_seen = any(mv in set(team_m["model_version"]) for mv in latest_mvs)
-                st.markdown(
-                    f"<div class='note'>{rec_txt} Versions de la carpeta tengo-aurilla-v0 (en blau al gràfic), amb "
-                    f"les etiquetes que escriuen a RawTree: {files_txt or 'cap'}. "
-                    + ("" if not latest_lab or latest_seen else
-                       f"La versió més nova ({latest_lab}) encara no ha respost cap petició. ")
-                    + "Les dues etiquetes <code>transformada-neta</code> són la v6 en prova A/B: la de control té la "
-                      "tendència desactivada. En gris, versions sense fitxer a la carpeta.</div>",
-                    unsafe_allow_html=True)
-                running = team_m[team_m["status"] != "Aturat"]
-                if len(running) >= 2:
-                    best = running.sort_values("rpm", ascending=False).iloc[0]
-                    st.markdown(
-                        f"<div class='note'><b>Test A/B en marxa:</b> {len(running)} versions responen alhora "
-                        f"({', '.join(running['name'])}). És la comparació més justa, perquè reben compradors de la "
-                        f"mateixa hora. Ara guanya <b>{best['name']}</b> amb <b>{eur(best['rpm'])}</b> per 1.000 "
-                        f"impressions.</div>", unsafe_allow_html=True)
-                st.markdown(
-                    "<div class='note'><b>Compte en comparar versions que no han coincidit en el temps:</b> cada una ha "
-                    "funcionat a hores diferents del dia, amb rebaixes i productes nous diferents. Les diferències "
-                    "petites poden ser degudes al moment i no al model.</div>", unsafe_allow_html=True)
-            st.dataframe(
-                team_m.iloc[::-1][["status", "name", "period", "impressions", "served_share", "rpm", "ctr", "conv",
-                                   "revenue", "latency_p50"]],
-                width="stretch", hide_index=True, height=260,
-                column_config={
-                    "status": st.column_config.TextColumn("Estat", width="small"),
-                    "name": st.column_config.TextColumn("Versió", width="medium"),
-                    "period": "Període",
-                    "impressions": st.column_config.NumberColumn("Impressions", format="%d"),
-                    "served_share": st.column_config.ProgressColumn("Respostes a temps", format="percent",
-                                                                    min_value=0.0, max_value=1.0),
-                    "rpm": st.column_config.NumberColumn("€ / 1.000 impressions", format="%.0f €"),
-                    "ctr": st.column_config.NumberColumn("CTR", format="percent"),
-                    "conv": st.column_config.NumberColumn("Conversió", format="percent"),
-                    "revenue": st.column_config.NumberColumn("Ingressos", format="%.0f €"),
-                    "latency_p50": st.column_config.NumberColumn("Latència mediana", format="%.0f ms"),
-                })
-
-    with tabs[3]:
         h1, h2, h3, _ = st.columns([1.6, 1.8, 1.6, 2])
         src = h1.radio("Període", ["Avui (en viu)", "Històric 60 dies"], horizontal=True, key="heat_src")
         metric = h2.radio("Mètrica", ["Compres", "Facturació", "Conversió"], horizontal=True, key="heat_metric")
