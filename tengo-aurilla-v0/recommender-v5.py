@@ -1784,7 +1784,8 @@ def health_loop(rt: RawTree, st: State, args) -> None:
                     "fb5m_fallback": len(fb) - len(team), "conv5m": conv,
                     "rev5m": sum(x[5] for x in team) / max(len(team), 1), "lat_p95": qf(lats, 0.95),
                     "n_products": st.n, "n_new": int(st.is_new[:st.n].sum()), "live_purchases": int(st.T_live),
-                    "params": {k: v for k, v in st.prm.items() if not isinstance(v, dict)}}], timeout=5)
+                    "params": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in st.prm.items()
+                               if not isinstance(v, dict)}}], timeout=5)
         except Exception as e:  # noqa: BLE001
             log.warning("[health] %s", str(e)[:200])
         STOP.wait(10)
