@@ -678,7 +678,7 @@ def build_product_table(
     return prod
 
 
-HANGOVER_H = 2.0  # hores després del retorn al preu original que es vigilen (ressaca)
+HANGOVER_H = 4.0  # hores després del retorn al preu original que es vigilen (dissolució de l'efecte)
 
 
 def price_windows(events: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
@@ -834,7 +834,7 @@ def cost_verdict(kind: str, value: float, price: float) -> str:
     return f"⚠️ Només rendible si el cost unitari > {eur(value, 2)} ({pct(share, 0)} del preu de venda)"
 
 
-def discount_index(long: pd.DataFrame, win: pd.DataFrame, before_h: float = 2.0, after_h: float = 4.0) -> pd.DataFrame:
+def discount_index(long: pd.DataFrame, win: pd.DataFrame, before_h: float = 2.0, after_h: float = 6.0) -> pd.DataFrame:
     """
     Corba mitjana de totes les rebaixes: índex real ÷ esperat × 100 (100 = sense efecte), alineada a l'hora
     d'inici de cada rebaixa. Un índex (i no una suma) evita els salts quan les rebaixes cobreixen hores diferents.
@@ -1013,26 +1013,28 @@ def fig_lost_bars(df: pd.DataFrame, label_col: str, height: int, top: int = 8) -
     return fig
 
 
-def fig_discount_index(idx: pd.DataFrame, height: int, compact: bool = False) -> go.Figure:
+def fig_discount_index(idx: pd.DataFrame, height: int, compact: bool = False, dur: float = 2.0,
+                       post: float = HANGOVER_H) -> go.Figure:
+    """Corba mitjana: 2 h abans, la rebaixa (durada real) i les `post` hores després de tornar al preu original."""
     fig = go.Figure()
     top = max(160.0, float(idx["index"].max()) + 10) if not idx.empty else 160.0
     low = min(70.0, float(idx["index"].min()) - 10) if not idx.empty else 70.0
-    fig.add_vrect(x0=0, x1=2, fillcolor=C["warning"], opacity=0.14, line_width=0)
-    fig.add_vrect(x0=2, x1=4, fillcolor=C["neutral"], opacity=0.08, line_width=0)
+    fig.add_vrect(x0=0, x1=dur, fillcolor=C["warning"], opacity=0.14, line_width=0)
+    fig.add_vrect(x0=dur, x1=dur + post, fillcolor=C["neutral"], opacity=0.08, line_width=0)
     fig.add_hline(y=100, line=dict(color=C["muted"], dash="dot", width=1))
     if not idx.empty:
         fig.add_trace(go.Scatter(
             x=idx["rel_h"] + 0.25, y=idx["index"], mode="lines+markers", name="Real ÷ esperat",
             line=dict(color=C["team"], width=2.5), marker=dict(size=6),
             hovertemplate="%{x:+.2f} h · índex %{y:.0f}<extra></extra>"))
-    fig.add_annotation(x=1, y=top, text="rebaixa activa", showarrow=False, yanchor="top",
+    fig.add_annotation(x=dur / 2, y=top, text="rebaixa activa", showarrow=False, yanchor="top",
                        font=dict(color=C["warning"], size=11))
-    fig.add_annotation(x=3, y=top, text="2 h després", showarrow=False, yanchor="top",
-                       font=dict(color=C["text2"], size=11))
+    fig.add_annotation(x=dur + post / 2, y=top, text=f"{post:.0f} h després (preu original)", showarrow=False,
+                       yanchor="top", font=dict(color=C["text2"], size=11))
     fig.add_annotation(x=-2, y=100, text="100 = sense efecte", showarrow=False, xanchor="left", yanchor="bottom",
                        font=dict(color=C["muted"], size=10))
     style_fig(fig, height=height, legend=False, margin=dict(l=4, r=8, t=8, b=4))
-    fig.update_xaxes(range=[-2, 4], dtick=1, title=None if compact else "Hores des de l'inici de la rebaixa",
+    fig.update_xaxes(range=[-2, dur + post], dtick=1, title=None if compact else "Hores des de l'inici de la rebaixa",
                      ticksuffix=" h")
     fig.update_yaxes(range=[low, top], title=None if compact else "Vendes (100 = esperat sense rebaixa)")
     return fig
@@ -1217,7 +1219,10 @@ def compute_shared() -> Dict[str, Any]:
   dead["dead_type"] = np.where(dead["exp_sales"] >= DEAD_EXPECTED_MIN, TYPE_LOOKED, TYPE_UNSEEN)
 
   pc_long, pc_by, pc_win, pc_tot = price_change_analysis(data["pc_events"], data["pc_sales"], sel_cat, live_start, now)
-  pc_idx = discount_index(pc_long, pc_win)
+  _closed = pc_win[~pc_win["open"]] if not pc_win.empty else pc_win
+  pc_dur = (float(((_closed["end"] - _closed["start"]).dt.total_seconds() / 3600).median())
+            if not _closed.empty else 2.0)
+  pc_idx = discount_index(pc_long, pc_win, 2.0, pc_dur + HANGOVER_H)
   if pc_tot:
       pc_dU = pc_tot["obs_units_durant"] - pc_tot["exp_units_durant"]
       pc_dR = pc_tot["obs_rev_durant"] - pc_tot["exp_rev_durant"]
@@ -1309,7 +1314,7 @@ if view == "home":
                 f"<div class='big' style='font-size:1.4rem'>{cost_short(pc_kind, pc_val)}</div>",
                 unsafe_allow_html=True)
             with b:
-                st.plotly_chart(fig_discount_index(pc_idx, 320, compact=True), width="stretch", config=PLOT_CFG,
+                st.plotly_chart(fig_discount_index(pc_idx, 320, compact=True, dur=pc_dur), width="stretch", config=PLOT_CFG,
                                 key="home_idx")
         else:
             st.info("No hi ha rebaixes amb prou dades per a aquests filtres.")
@@ -1723,7 +1728,7 @@ elif view == "rebaixes":
         with tabs[0]:
             c1, c2 = st.columns([2.2, 1])
             with c1:
-                st.plotly_chart(fig_discount_index(pc_idx, 560), width="stretch", config=PLOT_CFG)
+                st.plotly_chart(fig_discount_index(pc_idx, 560, dur=pc_dur), width="stretch", config=PLOT_CFG)
             with c2:
                 st.markdown(
                     "<div class='note'><b>Com es llegeix.</b> La línia és la mitjana de totes les rebaixes: vendes reals ÷ "
@@ -1811,13 +1816,13 @@ elif view == "rebaixes":
                     "cost_share": st.column_config.ProgressColumn("Cost màxim / preu", format="percent",
                                                                   min_value=0.0, max_value=1.0),
                     "verdict": st.column_config.TextColumn("Veredicte", width="large"),
-                    "after": st.column_config.TextColumn("Comprovació: 2 h després"),
+                    "after": st.column_config.TextColumn(f"Comprovació: {HANGOVER_H:.0f} h després"),
                 })
             st.markdown(
                 "<div class='note'><b>Sense suposar cap marge.</b> Benefici extra de la rebaixa = facturació de més − cost "
                 "unitari × unitats de més, comptant només les hores en què la rebaixa és activa. Si es venen més unitats, la "
                 "rebaixa dona benefici només si cada unitat costa menys de <b>facturació de més ÷ unitats de més</b>; si la "
-                "facturació baixa, cap cost la fa rendible. La columna «2 h després» comprova si en tornar al preu normal "
+                "facturació baixa, cap cost la fa rendible. La columna «" + f"{HANGOVER_H:.0f}" + " h després» comprova si en tornar al preu normal "
                 "es ven menys del normal (clients que han avançat la compra): si diu «sense efecte», no hi ha res a "
                 "descomptar.</div>", unsafe_allow_html=True)
             if pc_tot["skipped"]:
@@ -1873,7 +1878,11 @@ elif view == "mort":
                                   annotation_text=f"≈ {DEAD_EXPECTED_MIN:.0f} vendes esperades",
                                   annotation_position="top", annotation_font=dict(color=C["muted"], size=10))
                 style_fig(fig, height=560, margin=dict(l=8, r=8, t=30, b=8))
-                fig.update_xaxes(type="log", title=f"Vistes als últims {dead_days} dies")
+                # Escala lineal (les vistes abasten menys d'un ordre de magnitud) i rang ajustat a les dades:
+                # de 0 a un 8 % més que el producte amb més vistes; si un dia en tenen més, l'eix s'allarga sol.
+                x_max = max(float(dead["views_win"].max()),
+                            DEAD_EXPECTED_MIN / overall_conv if overall_conv > 0 else 0.0, 1.0) * 1.08
+                fig.update_xaxes(title=f"Vistes als últims {dead_days} dies", type="linear", range=[0, x_max], nticks=8)
                 fig.update_yaxes(title="Preu (€)")
                 st.plotly_chart(fig, width="stretch", config=PLOT_CFG)
             st.markdown(
