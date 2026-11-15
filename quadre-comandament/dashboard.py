@@ -77,10 +77,19 @@ def recommender_files() -> List[Tuple[int, str]]:
     return sorted(out)
 
 
+# Etiquetes amb què s'ha llançat un recommender en viu diferents de la del seu fitxer (amb --set model_version=...).
+# Font: tengo-aurilla-v0/modelo-neta-trend.tex (prova A/B: dos processos v6 idèntics, φ = 0 al control).
+MODEL_ALIASES: Dict[str, str] = {
+    "transformada-neta-trend": "v6",   # v6 amb tendència
+    "transformada-neta-ctrl": "v6",    # v6 control, sense tendència
+}
+
+
 def recommender_labels() -> Dict[str, str]:
     """model_version (el que escriu cada recommender a RawTree) → nom del fitxer (v4, v5, v6...)."""
     labels: Dict[str, str] = {}
-    for v, path in recommender_files():
+    files = recommender_files()
+    for v, path in files:
         try:
             with open(path, encoding="utf-8") as fh:
                 m = _MODEL_VERSION.search(fh.read())
@@ -88,6 +97,8 @@ def recommender_labels() -> Dict[str, str]:
                 labels[m.group(1)] = f"v{v}"
         except OSError:
             pass
+    existing = {f"v{v}" for v, _ in files}
+    labels.update({mv: lab for mv, lab in MODEL_ALIASES.items() if lab in existing})
     return labels
 
 
@@ -1401,7 +1412,8 @@ elif view == "retorn":
         warn_errors(errors, ["fb_models"])
         labels = recommender_labels()
         files = recommender_files()
-        latest_mv = next((mv for mv, lab in labels.items() if files and lab == f"v{files[-1][0]}"), None)
+        latest_lab = f"v{files[-1][0]}" if files else None
+        latest_mvs = [mv for mv, lab in labels.items() if lab == latest_lab]
         team_m = fm[fm["served_by"] == "team"].copy() if not fm.empty else pd.DataFrame()
         if team_m.empty:
             st.info("Encara no hi ha respostes del nostre motor per als filtres seleccionats.")
@@ -1443,15 +1455,17 @@ elif view == "retorn":
                 rec_txt = (f"El dashboard es connecta a RawTree amb el client de <b>{backend}</b>."
                            if backend.startswith("tengo-aurilla") else
                            f"No s'ha pogut fer servir el client de tengo-aurilla-v0; connexió: <b>{backend}</b>.")
-                files_txt = ", ".join(f"<b>v{v}</b> → <code>{mv}</code>" for mv, lab in labels.items()
-                                      for v, _ in files if lab == f"v{v}")
-                latest_seen = latest_mv in set(team_m["model_version"]) if latest_mv else False
+                files_txt = "; ".join(
+                    f"<b>v{v}</b> → " + ", ".join(f"<code>{mv}</code>" for mv, lab in labels.items() if lab == f"v{v}")
+                    for v, _ in files if any(lab == f"v{v}" for lab in labels.values()))
+                latest_seen = any(mv in set(team_m["model_version"]) for mv in latest_mvs)
                 st.markdown(
-                    f"<div class='note'>{rec_txt} Versions de la carpeta tengo-aurilla-v0 (en blau al gràfic): "
-                    f"{files_txt or 'cap'}. "
-                    + ("" if not latest_mv or latest_seen else
-                       f"La versió més nova (<code>{latest_mv}</code>) encara no ha respost cap petició. ")
-                    + "En gris, versions sense fitxer a la carpeta (anteriors o etiquetes de proves).</div>",
+                    f"<div class='note'>{rec_txt} Versions de la carpeta tengo-aurilla-v0 (en blau al gràfic), amb "
+                    f"les etiquetes que escriuen a RawTree: {files_txt or 'cap'}. "
+                    + ("" if not latest_lab or latest_seen else
+                       f"La versió més nova ({latest_lab}) encara no ha respost cap petició. ")
+                    + "Les dues etiquetes <code>transformada-neta</code> són la v6 en prova A/B: la de control té la "
+                      "tendència desactivada. En gris, versions sense fitxer a la carpeta.</div>",
                     unsafe_allow_html=True)
                 running = team_m[team_m["status"] != "Aturat"]
                 if len(running) >= 2:
