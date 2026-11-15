@@ -1,0 +1,19 @@
+
+COMPRAS: razón nuevo / antiguo medio de la subcategoría (± error)   filas = tanda de lanzamiento (hora desde el inicio), columnas = edad
+              0–1  h        1–2  h        2–4  h        4–8  h        8–12 h       12–16 h      
+   +   1 h    1.41 ± 0.08   1.46 ± 0.09   1.45 ± 0.06   1.47 ± 0.04   1.42 ± 0.04        ·       
+   +   5 h    1.10 ± 0.07   1.02 ± 0.07   1.08 ± 0.05   1.12 ± 0.04        ·             ·       
+   +   9 h    1.22 ± 0.08   1.23 ± 0.08   1.17 ± 0.05        ·             ·             ·       
+   +  13 h    0.73 ± 0.06   0.76 ± 0.06        ·             ·             ·             ·       
+   todas      1.11 ± 0.04   1.11 ± 0.04   1.23 ± 0.03   1.29 ± 0.03   1.42 ± 0.04        ·       
+
+VISTAS: razón nuevo / antiguo medio de la subcategoría (± error)   filas = tanda de lanzamiento (hora desde el inicio), columnas = edad
+              0–1  h        1–2  h        2–4  h        4–8  h        8–12 h       12–16 h      
+   +   1 h    1.13 ± 0.02   1.14 ± 0.02   1.14 ± 0.01   1.15 ± 0.01   1.14 ± 0.01        ·       
+   +   5 h    1.07 ± 0.02   1.05 ± 0.02   1.08 ± 0.01   1.07 ± 0.01        ·             ·       
+   +   9 h    1.08 ± 0.02   1.09 ± 0.02   1.07 ± 0.01        ·             ·             ·       
+   +  13 h    0.91 ± 0.02   0.89 ± 0.02        ·             ·             ·             ·       
+   todas      1.05 ± 0.01   1.04 ± 0.01   1.09 ± 0.01   1.11 ± 0.01   1.14 ± 0.01        ·       
+
+Compras por cada 100 vistas, productos nuevos según su edad: 0–1 h 5.6 · 1–2 h 5.5 · 2–4 h 5.7 · 4–8 h 6.4 · 8–12 h 5.9 · 12–16 h 6.4
+   productos antiguos: 5.2

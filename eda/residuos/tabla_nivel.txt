@@ -1,0 +1,77 @@
+NIVEL · 1591660 impresiones, 2127 compras · compras observadas / esperadas (Poisson, v6). Variables del usuario: no cambian el orden de la lista
+
+Variables ordenadas por desajuste (media de z² por tramo; ≈1 = nada que ver)
+  Tiempo desde el último evento del usuario             86.91
+  Eventos conocidos del usuario hoy                     64.45
+  Vistas recientes en la petición                        9.65
+  Compras del usuario hoy                                8.39
+  Hora del stream (desde las 10:00 CET)                  8.21
+  Dispositivo                                            3.36
+  Región                                                 1.66
+  Página                                                 0.22
+  Tipo de usuario                                        0.00
+
+Tiempo desde el último evento del usuario
+   sin eventos                                n=   86810 obs=   104 esp=   18.1 razón= 5.75 ±0.24 z=+20.2  <<<
+   <1 min                                     n=   34170 obs=    18 esp=   35.6 razón= 0.51 ±0.17 z= -2.9
+   1–5 min                                    n=  119860 obs=   127 esp=  143.9 razón= 0.88 ±0.08 z= -1.4
+   5–30 min                                   n=  469040 obs=   525 esp=  620.4 razón= 0.85 ±0.04 z= -3.8  <<<
+   30 min+                                    n=  881780 obs=  1353 esp= 1309.1 razón= 1.03 ±0.03 z= +1.2
+
+Eventos conocidos del usuario hoy
+   0 eventos                                  n=   86810 obs=   104 esp=   18.1 razón= 5.75 ±0.24 z=+20.2  <<<
+   1–2                                        n=   26810 obs=    19 esp=   11.5 razón= 1.65 ±0.29 z= +2.2
+   3–5                                        n=   74630 obs=    74 esp=   50.6 razón= 1.46 ±0.14 z= +3.3  <<<
+   6–10                                       n=  129730 obs=   119 esp=   96.9 razón= 1.23 ±0.10 z= +2.2
+   11–20                                      n=  248730 obs=   262 esp=  234.3 razón= 1.12 ±0.07 z= +1.8
+   21–50                                      n=  521800 obs=   742 esp=  780.9 razón= 0.95 ±0.04 z= -1.4
+   51+                                        n=  503150 obs=   807 esp=  934.6 razón= 0.86 ±0.03 z= -4.2  <<<
+
+Vistas recientes en la petición
+   0 vistas                                   n=  317150 obs=   143 esp=  143.0 razón= 1.00 ±0.08 z= -0.0
+   1                                          n=  403390 obs=   743 esp=  607.6 razón= 1.22 ±0.04 z= +5.5  <<<
+   2                                          n=  324410 obs=   492 esp=  508.4 razón= 0.97 ±0.04 z= -0.7
+   3                                          n=  239140 obs=   342 esp=  377.6 razón= 0.91 ±0.05 z= -1.8
+   4+                                         n=  307570 obs=   407 esp=  490.4 razón= 0.83 ±0.05 z= -3.8  <<<
+
+Compras del usuario hoy
+   0 compras hoy                              n=  635650 obs=   378 esp=  388.2 razón= 0.97 ±0.05 z= -0.5
+   1                                          n=  331800 obs=   287 esp=  362.4 razón= 0.79 ±0.05 z= -4.0  <<<
+   2                                          n=  189150 obs=   261 esp=  296.0 razón= 0.88 ±0.06 z= -2.0
+   3+                                         n=  435060 obs=  1201 esp= 1080.4 razón= 1.11 ±0.03 z= +3.7  <<<
+
+Hora del stream (desde las 10:00 CET)
+   00–02 h                                    n=   82360 obs=    71 esp=   38.1 razón= 1.86 ±0.16 z= +5.3  <<<
+   02–04 h                                    n=  216010 obs=   159 esp=  110.3 razón= 1.44 ±0.10 z= +4.6  <<<
+   04–06 h                                    n=  215990 obs=   172 esp=  143.9 razón= 1.20 ±0.08 z= +2.3
+   06–08 h                                    n=  215720 obs=   123 esp=  117.5 razón= 1.05 ±0.09 z= +0.5
+   08–10 h                                    n=  215990 obs=   199 esp=  206.1 razón= 0.97 ±0.07 z= -0.5
+   10–12 h                                    n=  216000 obs=   462 esp=  479.9 razón= 0.96 ±0.05 z= -0.8
+   12–14 h                                    n=  216010 obs=   462 esp=  526.1 razón= 0.88 ±0.04 z= -2.8
+   14–16 h                                    n=  213580 obs=   479 esp=  505.1 razón= 0.95 ±0.04 z= -1.2
+
+Dispositivo
+   android                                    n=  529610 obs=   772 esp=  714.6 razón= 1.08 ±0.04 z= +2.1
+   ios                                        n=  535810 obs=   641 esp=  702.9 razón= 0.91 ±0.04 z= -2.3
+   web                                        n=  526240 obs=   714 esp=  709.5 razón= 1.01 ±0.04 z= +0.2
+
+Región
+   Andalucía                                  n=  339910 obs=   556 esp=  521.4 razón= 1.07 ±0.04 z= +1.5
+   Aragón                                     n=   53950 obs=    55 esp=   66.8 razón= 0.82 ±0.12 z= -1.4
+   Canarias                                   n=   77370 obs=   124 esp=  115.2 razón= 1.08 ±0.09 z= +0.8
+   Castilla y León                            n=   96790 obs=   114 esp=  113.8 razón= 1.00 ±0.09 z= +0.0
+   Catalunya                                  n=  300480 obs=   357 esp=  370.1 razón= 0.96 ±0.05 z= -0.7
+   Comunitat Valenciana                       n=  203320 obs=   259 esp=  265.9 razón= 0.97 ±0.06 z= -0.4
+   Galicia                                    n=  109720 obs=   144 esp=  141.6 razón= 1.02 ±0.08 z= +0.2
+   Madrid                                     n=  262570 obs=   296 esp=  333.5 razón= 0.89 ±0.05 z= -2.1
+   Murcia                                     n=   55420 obs=   104 esp=   80.9 razón= 1.29 ±0.11 z= +2.6
+   País Vasco                                 n=   92130 obs=   118 esp=  117.6 razón= 1.00 ±0.09 z= +0.0
+
+Página
+   home                                       n=  317150 obs=   143 esp=  143.0 razón= 1.00 ±0.08 z= -0.0
+   category                                   n=  381940 obs=   603 esp=  586.5 razón= 1.03 ±0.04 z= +0.7
+   product                                    n=  892570 obs=  1381 esp= 1397.5 razón= 0.99 ±0.03 z= -0.4
+
+Tipo de usuario
+   con historial                              n= 1116070 obs=  1145 esp= 1145.0 razón= 1.00 ±0.03 z= -0.0
+   usuario nuevo                              n=  475590 obs=   982 esp=  982.0 razón= 1.00 ±0.03 z= +0.0

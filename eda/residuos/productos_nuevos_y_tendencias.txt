@@ -1,0 +1,50 @@
+stream 16.0 h · 3832828 eventos · compras 174718 · vistas 3309029 · productos nuevos 400
+lanzamientos por hora desde el inicio: [100, 0, 0, 0, 100, 0, 0, 0, 100, 0, 0, 0, 100]
+
+(A1) Productos nuevos frente a los antiguos de su misma subcategoría, misma franja horaria
+     razón = eventos por producto nuevo / eventos por producto antiguo (media) de la subcategoría
+     compras  0.0– 0.5 h tras el lanzamiento: observado     452 · si fuese como la media    415.7 → razón  1.09 ± 0.05 · frente al prior (mediana)  2.79
+     compras  0.5– 1.0 h tras el lanzamiento: observado     467 · si fuese como la media    410.2 → razón  1.14 ± 0.05 · frente al prior (mediana)  2.95
+     compras  1.0– 2.0 h tras el lanzamiento: observado     887 · si fuese como la media    800.5 → razón  1.11 ± 0.04 · frente al prior (mediana)  2.78
+     compras  2.0– 4.0 h tras el lanzamiento: observado    1651 · si fuese como la media   1424.6 → razón  1.16 ± 0.03 · frente al prior (mediana)  3.03
+     compras  4.0– 8.0 h tras el lanzamiento: observado    3070 · si fuese como la media   2289.3 → razón  1.34 ± 0.02 · frente al prior (mediana)  3.67
+     compras  8.0–16.0 h tras el lanzamiento: observado    2558 · si fuese como la media   2006.6 → razón  1.27 ± 0.03 · frente al prior (mediana)  3.61
+     vistas   0.0– 0.5 h tras el lanzamiento: observado    8242 · si fuese como la media   7851.6 → razón  1.05 ± 0.01 · frente al prior (mediana)  2.89
+     vistas   0.5– 1.0 h tras el lanzamiento: observado    8210 · si fuese como la media   7820.3 → razón  1.05 ± 0.01 · frente al prior (mediana)  2.88
+     vistas   1.0– 2.0 h tras el lanzamiento: observado   16112 · si fuese como la media  15471.5 → razón  1.04 ± 0.01 · frente al prior (mediana)  2.85
+     vistas   2.0– 4.0 h tras el lanzamiento: observado   29144 · si fuese como la media  27308.9 → razón  1.07 ± 0.01 · frente al prior (mediana)  2.95
+     vistas   4.0– 8.0 h tras el lanzamiento: observado   48064 · si fuese como la media  43283.0 → razón  1.11 ± 0.01 · frente al prior (mediana)  3.13
+     vistas   8.0–16.0 h tras el lanzamiento: observado   42216 · si fuese como la media  38102.9 → razón  1.11 ± 0.01 · frente al prior (mediana)  3.15
+
+(A2) Productos nuevos: ¿qué predice las compras de 0,5–6 h tras el lanzamiento?
+     300 productos con 6 h de vida · compras 0,5–6 h por producto: media 14.3, mediana 3, p10 0, p90 30
+     primera media hora por producto: vistas 21.6 · carritos 2.57 · compras 1.24
+     Spearman con compras posteriores (relativas a la subcategoría): vistas 0–30 min                 0.37
+     Spearman con compras posteriores (relativas a la subcategoría): carritos 0–30 min               0.73
+     Spearman con compras posteriores (relativas a la subcategoría): compras 0–30 min                0.61
+     Spearman con compras posteriores (relativas a la subcategoría): vistas+10·carritos+40·compras   0.68
+     dispersión entre productos nuevos de la cuota relativa posterior: cv = 2.26 (Poisson puro daría 0.26)
+     Spearman con el cuantil de precio (1 = barato):  0.28
+
+(B1) Episodios de tendencia por subcategoría (cubos de 15 min, cuota >= 2,5× la mediana y >= 30 compras)
+     20 cubos calientes en 7 subcategorías: Aquariums(3), Bike Helmets(3), Cutting Boards(3), Face Cream(2), Game Consoles(3), Kettles(3), Vitamins(3)
+     Dentro de la subcategoría caliente, ¿se reparte entre productos como fuera del episodio?
+       Aquariums                    compras en episodio   141 ·  26 productos · corr(observado, esperado) 0.94 · mayor razón producto  2.6 · inflación esperada de G 1.49
+       Bike Helmets                 compras en episodio   382 ·  29 productos · corr(observado, esperado) 0.93 · mayor razón producto  3.4 · inflación esperada de G 1.41
+       Cutting Boards               compras en episodio   175 ·  28 productos · corr(observado, esperado) 0.83 · mayor razón producto  2.4 · inflación esperada de G 1.47
+       Face Cream                   compras en episodio    69 ·  24 productos · corr(observado, esperado) 0.83 · mayor razón producto  2.0 · inflación esperada de G 1.44
+       Game Consoles                compras en episodio   995 ·  46 productos · corr(observado, esperado) 0.98 · mayor razón producto  3.6 · inflación esperada de G 1.46
+       Kettles                      compras en episodio   499 ·  67 productos · corr(observado, esperado) 0.88 · mayor razón producto  2.3 · inflación esperada de G 1.65
+       Vitamins                     compras en episodio  1169 ·  93 productos · corr(observado, esperado) 0.84 · mayor razón producto  3.4 · inflación esperada de G 1.44
+     pendiente de log(observado) sobre log(esperado) en episodio: 0.83 ± 0.01 (Poisson; con sobredispersión el error real es mayor)
+     G/gl = 5.48  (1 ≈ reparto idéntico al habitual; hay que compararlo con la inflación esperada)
+
+(B2) Quitando el efecto de subcategoría, ¿quedan ráfagas por otra dimensión? (z por cubo de 15 min; var ≈ 1 = no)
+     etiquetas por producto: media 1.85 (nuevos: 0.00)
+     etiqueta (20)                      celdas   1260 · var(z)  1.19 · max z   3.4 · celdas con z>4: 0
+     etiqueta dentro de la sub caliente celdas    224 · var(z)  1.79 · max z   3.4
+     tercil de precio en la subcategoría celdas    189 · var(z)  0.74 · max z   2.3 · celdas con z>4: 0
+     nuevo frente a antiguo             celdas    126 · var(z) 15.53 · max z   9.0 · celdas con z>4: 17
+     (referencia) subcategoría          celdas   3929 · var(z)  5.37 · max z  42.5 · celdas con z>4: 17
+     categoría (sin las subs calientes) celdas    630 · var(z)  2.28 · max z   6.3 · celdas con z>4: 13
+     resto de la categoría de la sub caliente durante el episodio: razón observada/esperada 0.93 ± 0.03

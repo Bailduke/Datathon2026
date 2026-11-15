@@ -1,0 +1,35 @@
+159166 listas, 2127 compras · de v2 en adelante: 60050 listas, 1343 compras
+listas de v2 en adelante: subcategorías distintas por lista (mediana) 6 · categorías distintas 2 · listas con una sola categoría 24 %
+TODAS LAS LISTAS
+  solo saturación                    gamma (log S) +1.00 ± 0.02
+  + concentración por subcategoría   gamma (log S) +0.99 ± 0.02 · hhi_sub +0.17 ± 0.13
+  + concentración por categoría      gamma (log S) +0.99 ± 0.02 · hhi_cat +0.12 ± 0.10
+  + ambas                            gamma (log S) +0.98 ± 0.02 · hhi_sub +0.12 ± 0.15 · hhi_cat +0.08 ± 0.11
+SOLO v2 EN ADELANTE
+  solo saturación                    gamma (log S) +1.06 ± 0.02
+  + concentración por subcategoría   gamma (log S) +1.08 ± 0.03 · hhi_sub -0.43 ± 0.21
+  + concentración por categoría      gamma (log S) +1.05 ± 0.03 · hhi_cat +0.06 ± 0.13
+  + ambas                            gamma (log S) +1.07 ± 0.03 · hhi_sub -0.59 ± 0.23 · hhi_cat +0.22 ± 0.14
+v2+, páginas con sesión
+  solo saturación                    gamma (log S) +1.05 ± 0.02
+  + concentración por subcategoría   gamma (log S) +1.07 ± 0.03 · hhi_sub -0.41 ± 0.21
+  + concentración por categoría      gamma (log S) +1.04 ± 0.03 · hhi_cat +0.07 ± 0.13
+  + ambas                            gamma (log S) +1.06 ± 0.03 · hhi_sub -0.58 ± 0.24 · hhi_cat +0.23 ± 0.14
+
+v2 en adelante, por subcategorías distintas en la lista:
+      listas  compras  esperadas  obs/esp    ±
+tr                                            
+1–2      252      7.0       10.8      0.6  0.2
+3–4     7928    277.0      260.9      1.1  0.1
+5–6    22795    553.0      548.6      1.0  0.0
+7–8    22014    377.0      406.3      0.9  0.0
+9–10    7061    129.0      116.3      1.1  0.1
+
+v2 en adelante, por categorías distintas en la lista:
+      listas  compras  esperadas  obs/esp    ±
+tr                                            
+1–2    30835    852.0      830.7      1.0  0.0
+3–4    24184    409.0      437.4      0.9  0.0
+5–6     4834     79.0       71.7      1.1  0.1
+7–8      196      3.0        3.1      1.0  0.6
+9–10       1      0.0        0.0      0.0  0.0

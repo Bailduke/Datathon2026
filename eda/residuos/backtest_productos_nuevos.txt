@@ -1,0 +1,39 @@
+cuota media / cuota mediana por subcategoría: mediana de la razón 3.03 · carritos por compra 2.00
+  0/159166 peticiones · 1 s
+  40000/159166 peticiones · 65 s
+  80000/159166 peticiones · 136 s
+  120000/159166 peticiones · 213 s
+
+1591660 impresiones · 2127 compras · productos nuevos: 40612 impresiones (2.6 %), 49 compras (2.3 %)
+
+(1) Ajuste dentro de la lista (logit condicional, mismos parámetros en todas las variantes)
+   base      logver   -3424.3 · theta 0.520 · con indicador 'producto nuevo': logver   -3397.4, coeficiente +1.76 ± 0.22 (x5.81) · Poisson  -12559.8
+   media     logver   -3423.4 · theta 0.523 · con indicador 'producto nuevo': logver   -3397.3, coeficiente +1.73 ± 0.22 (x5.65) · Poisson  -12558.2
+   debil     logver   -3422.0 · theta 0.525 · con indicador 'producto nuevo': logver   -3398.1, coeficiente +1.66 ± 0.22 (x5.25) · Poisson  -12555.7
+   carritos  logver   -3421.8 · theta 0.525 · con indicador 'producto nuevo': logver   -3398.1, coeficiente +1.65 ± 0.22 (x5.22) · Poisson  -12555.4
+
+(2) Conversión prevista de la lista que elegiría cada variante (todas las peticiones)
+   productos nuevos por lista de 10: base 0.14 · media 0.15 · debil 0.19 · carritos 0.20
+   verdad = base + indicador libre de producto nuevo
+      lista de 'base     ' 2.379 %  (+0.00 % relativo ± 0.00) · usuarios nuevos 3.378 % · con historia 1.953 %
+      lista de 'media    ' 2.380 %  (+0.05 % relativo ± 0.00) · usuarios nuevos 3.380 % · con historia 1.954 %
+      lista de 'debil    ' 2.384 %  (+0.21 % relativo ± 0.00) · usuarios nuevos 3.387 % · con historia 1.957 %
+      lista de 'carritos ' 2.384 %  (+0.23 % relativo ± 0.00) · usuarios nuevos 3.388 % · con historia 1.957 %
+   verdad = modelo 'media'
+      lista de 'base     ' 2.381 %  (+0.00 % relativo ± 0.00) · usuarios nuevos 3.398 % · con historia 1.947 %
+      lista de 'media    ' 2.381 %  (-0.00 % relativo ± 0.00) · usuarios nuevos 3.398 % · con historia 1.947 %
+      lista de 'debil    ' 2.380 %  (-0.03 % relativo ± 0.00) · usuarios nuevos 3.398 % · con historia 1.946 %
+      lista de 'carritos ' 2.380 %  (-0.04 % relativo ± 0.00) · usuarios nuevos 3.398 % · con historia 1.946 %
+   verdad = modelo 'debil'
+      lista de 'base     ' 2.377 %  (+0.00 % relativo ± 0.00) · usuarios nuevos 3.394 % · con historia 1.944 %
+      lista de 'media    ' 2.377 %  (-0.00 % relativo ± 0.00) · usuarios nuevos 3.394 % · con historia 1.944 %
+      lista de 'debil    ' 2.377 %  (-0.01 % relativo ± 0.00) · usuarios nuevos 3.394 % · con historia 1.943 %
+      lista de 'carritos ' 2.377 %  (-0.02 % relativo ± 0.00) · usuarios nuevos 3.394 % · con historia 1.943 %
+   verdad = modelo 'carritos'
+      lista de 'base     ' 2.377 %  (+0.00 % relativo ± 0.00) · usuarios nuevos 3.394 % · con historia 1.944 %
+      lista de 'media    ' 2.377 %  (-0.00 % relativo ± 0.00) · usuarios nuevos 3.394 % · con historia 1.944 %
+      lista de 'debil    ' 2.377 %  (-0.01 % relativo ± 0.00) · usuarios nuevos 3.394 % · con historia 1.943 %
+      lista de 'carritos ' 2.377 %  (-0.01 % relativo ± 0.00) · usuarios nuevos 3.394 % · con historia 1.943 %
+
+325 s
+exit 0

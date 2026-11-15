@@ -1,0 +1,157 @@
+ORDEN dentro de la lista · 2127 listas con compra · compras observadas / esperadas por el modelo (v6) entre los 10 productos mostrados
+
+Variables ordenadas por desajuste (media de z² por tramo; ≈1 = nada que ver)
+  Edad del producto                                     20.50
+  Co-compra con las vistas de hoy                        3.51
+  Co-compra con la sesión                                2.61
+  Co-compra con el historial                             1.65
+  Precio dentro de la subcategoría                       1.42
+  Categoría del producto                                 1.14
+  Decil de log h (jerárquica)                            1.03
+  Posición en la lista                                   0.99
+  Etiquetas con el historial                             0.94
+  Decil de la puntuación (dentro de la lista)            0.91
+  Precio absoluto                                        0.91
+  Tendencia de la subcategoría (log τ)                   0.64
+  Etiquetas comunes con el último visto (no vistos)      0.52
+  Etiquetas con la sesión                                0.36
+  Relación con el último visto                           0.27
+  Ventas históricas dentro de la subcategoría            0.27
+  Rebaja activa                                          0.25
+
+Edad del producto
+   antiguo                                    n=   20877 obs=  2078 esp= 2106.6 razón= 0.99 ±0.02 z= -0.8
+   4–8 h                                      n=     170 obs=    21 esp=    8.8 razón= 2.40 ±0.28 z= +5.1  <<<
+   8+ h                                       n=     124 obs=    25 esp=    9.1 razón= 2.74 ±0.29 z= +6.0  <<<
+
+Co-compra con las vistas de hoy
+   = 0                                        n=    1421 obs=   152 esp=  123.1 razón= 1.23 ±0.07 z= +3.2  <<<
+   -0.87…0.02                                 n=    1425 obs=    21 esp=   30.6 razón= 0.69 ±0.16 z= -1.9
+   0.02…0.11                                  n=    1332 obs=    63 esp=   82.5 razón= 0.76 ±0.10 z= -2.4
+   0.11…0.19                                  n=    2308 obs=   175 esp=  177.1 razón= 0.99 ±0.07 z= -0.2
+   0.19…0.30                                  n=    4041 obs=   346 esp=  362.5 razón= 0.95 ±0.05 z= -1.0
+   0.30…1.62                                  n=   10743 obs=  1370 esp= 1351.3 razón= 1.01 ±0.02 z= +0.6
+
+Co-compra con la sesión
+   = 0                                        n=    2377 obs=   264 esp=  234.6 razón= 1.13 ±0.05 z= +2.3
+   -1.00…-0.02                                n=    1483 obs=    25 esp=   41.7 razón= 0.60 ±0.14 z= -2.9
+   -0.02…0.03                                 n=    1412 obs=   112 esp=  119.2 razón= 0.94 ±0.08 z= -0.8
+   0.03…0.13                                  n=    2477 obs=   201 esp=  215.3 razón= 0.93 ±0.06 z= -1.1
+   0.13…0.33                                  n=    4209 obs=   418 esp=  412.6 razón= 1.01 ±0.04 z= +0.3
+   0.33…1.63                                  n=    9312 obs=  1107 esp= 1103.6 razón= 1.00 ±0.02 z= +0.1
+
+Co-compra con el historial
+   = 0                                        n=   10088 obs=  1027 esp= 1004.5 razón= 1.02 ±0.03 z= +0.9
+   -0.85…-0.00                                n=     532 obs=     1 esp=    4.5 razón= 0.22 ±0.46 z= -1.7
+   -0.00…0.21                                 n=     634 obs=    25 esp=   32.1 razón= 0.78 ±0.15 z= -1.4
+   0.21…0.41                                  n=    1341 obs=    79 esp=   89.6 razón= 0.88 ±0.09 z= -1.3
+   0.41…0.61                                  n=    2600 obs=   211 esp=  229.9 razón= 0.92 ±0.06 z= -1.4
+   0.61…1.43                                  n=    6075 obs=   784 esp=  766.6 razón= 1.02 ±0.03 z= +0.8
+
+Precio dentro de la subcategoría
+   más caro                                   n=    2811 obs=   272 esp=  290.0 razón= 0.94 ±0.05 z= -1.2
+   2                                          n=    1696 obs=   143 esp=  130.2 razón= 1.10 ±0.08 z= +1.3
+   3                                          n=    1870 obs=   160 esp=  175.1 razón= 0.91 ±0.07 z= -1.3
+   4                                          n=    2342 obs=   169 esp=  181.1 razón= 0.93 ±0.07 z= -1.0
+   más barato                                 n=   12551 obs=  1383 esp= 1350.6 razón= 1.02 ±0.02 z= +1.1
+
+Categoría del producto
+   Beauty & Health                            n=    1544 obs=   119 esp=  118.5 razón= 1.00 ±0.08 z= +0.1
+   Books & Media                              n=    7280 obs=   840 esp=  832.4 razón= 1.01 ±0.03 z= +0.3
+   Computers & Gaming                         n=    1762 obs=   164 esp=  159.7 razón= 1.03 ±0.07 z= +0.4
+   Electronics                                n=    2045 obs=   176 esp=  171.3 razón= 1.03 ±0.06 z= +0.4
+   Fashion                                    n=    1929 obs=   213 esp=  193.9 razón= 1.10 ±0.06 z= +1.7
+   Home & Garden                              n=     368 obs=    23 esp=   29.4 razón= 0.78 ±0.16 z= -1.3
+   Home & Kitchen                             n=     908 obs=    50 esp=   65.3 razón= 0.77 ±0.11 z= -2.1
+   Pets                                       n=     170 obs=    16 esp=   14.9 razón= 1.08 ±0.22 z= +0.3
+   Sports & Outdoors                          n=    1286 obs=   132 esp=  127.4 razón= 1.04 ±0.08 z= +0.5
+   Toys & Baby                                n=    3978 obs=   394 esp=  414.3 razón= 0.95 ±0.04 z= -1.2
+
+Decil de log h (jerárquica)
+   -27.63…-7.51                               n=     996 obs=    14 esp=   11.3 razón= 1.24 ±0.28 z= +0.8
+   -7.51…-6.58                                n=    1024 obs=    25 esp=   27.1 razón= 0.92 ±0.18 z= -0.4
+   -6.58…-6.10                                n=    1387 obs=    65 esp=   55.0 razón= 1.18 ±0.13 z= +1.4
+   -6.10…-5.78                                n=    1536 obs=    84 esp=   81.9 razón= 1.03 ±0.10 z= +0.3
+   -5.78…-5.49                                n=    1947 obs=   130 esp=  125.9 razón= 1.03 ±0.08 z= +0.4
+   -5.49…-5.21                                n=    2183 obs=   163 esp=  161.3 razón= 1.01 ±0.07 z= +0.1
+   -5.21…-4.93                                n=    2481 obs=   180 esp=  208.3 razón= 0.86 ±0.06 z= -2.2
+   -4.93…-4.63                                n=    2811 obs=   253 esp=  268.8 razón= 0.94 ±0.05 z= -1.1
+   -4.63…-4.21                                n=    3226 obs=   403 esp=  395.5 razón= 1.02 ±0.04 z= +0.5
+   -4.21…-1.57                                n=    3679 obs=   810 esp=  791.9 razón= 1.02 ±0.03 z= +0.9
+
+Posición en la lista
+   posición 1                                 n=    2127 obs=   829 esp=  850.7 razón= 0.97 ±0.02 z= -1.1
+   posición 2                                 n=    2127 obs=   366 esp=  331.6 razón= 1.10 ±0.05 z= +2.2
+   posición 3                                 n=    2127 obs=   227 esp=  232.8 razón= 0.97 ±0.06 z= -0.4
+   posición 4                                 n=    2127 obs=   161 esp=  176.3 razón= 0.91 ±0.07 z= -1.3
+   posición 5                                 n=    2127 obs=   138 esp=  129.3 razón= 1.07 ±0.08 z= +0.8
+   posición 6                                 n=    2127 obs=   102 esp=   97.9 razón= 1.04 ±0.09 z= +0.4
+   posición 7                                 n=    2127 obs=    91 esp=   94.9 razón= 0.96 ±0.10 z= -0.4
+   posición 8                                 n=    2127 obs=    76 esp=   83.1 razón= 0.91 ±0.10 z= -0.8
+   posición 9                                 n=    2127 obs=    70 esp=   67.7 razón= 1.03 ±0.12 z= +0.3
+   posición 10                                n=    2127 obs=    67 esp=   62.6 razón= 1.07 ±0.12 z= +0.6
+
+Etiquetas con el historial
+   = 0                                        n=    9909 obs=   991 esp=  990.8 razón= 1.00 ±0.03 z= +0.0
+   -8.14…-0.85                                n=     847 obs=    17 esp=   15.0 razón= 1.13 ±0.23 z= +0.6
+   -0.85…0.27                                 n=    1512 obs=    74 esp=   84.4 razón= 0.88 ±0.09 z= -1.3
+   0.27…1.07                                  n=    2525 obs=   222 esp=  206.2 razón= 1.08 ±0.06 z= +1.3
+   1.07…1.81                                  n=    2955 obs=   314 esp=  333.0 razón= 0.94 ±0.05 z= -1.2
+   1.81…3.72                                  n=    3522 obs=   509 esp=  497.7 razón= 1.02 ±0.04 z= +0.6
+
+Decil de la puntuación (dentro de la lista)
+   -6.03…0.52                                 n=    2127 obs=     8 esp=   15.1 razón= 0.53 ±0.25 z= -1.9
+   0.52…1.95                                  n=    2127 obs=    78 esp=   86.4 razón= 0.90 ±0.10 z= -1.0
+   1.95…2.73                                  n=    2127 obs=   141 esp=  134.7 razón= 1.05 ±0.08 z= +0.6
+   2.73…3.19                                  n=    2127 obs=   158 esp=  160.9 razón= 0.98 ±0.07 z= -0.3
+   3.19…3.57                                  n=    2127 obs=   185 esp=  167.2 razón= 1.11 ±0.07 z= +1.5
+   3.57…3.93                                  n=    2127 obs=   178 esp=  176.4 razón= 1.01 ±0.07 z= +0.1
+   3.93…4.28                                  n=    2127 obs=   205 esp=  217.0 razón= 0.94 ±0.06 z= -0.9
+   4.28…4.71                                  n=    2127 obs=   250 esp=  247.3 razón= 1.01 ±0.05 z= +0.2
+   4.71…5.30                                  n=    2127 obs=   334 esp=  322.0 razón= 1.04 ±0.05 z= +0.8
+   5.30…9.43                                  n=    2127 obs=   590 esp=  599.9 razón= 0.98 ±0.03 z= -0.6
+
+Precio absoluto
+   <20 €                                      n=   12433 obs=  1368 esp= 1335.0 razón= 1.02 ±0.02 z= +1.1
+   20–50                                      n=    4073 obs=   343 esp=  368.6 razón= 0.93 ±0.04 z= -1.6
+   50–100                                     n=    1852 obs=   158 esp=  155.8 razón= 1.01 ±0.07 z= +0.2
+   100–250                                    n=    1462 obs=   112 esp=  120.6 razón= 0.93 ±0.08 z= -0.9
+   250+                                       n=    1450 obs=   146 esp=  147.0 razón= 0.99 ±0.07 z= -0.1
+
+Tendencia de la subcategoría (log τ)
+   <−0,3                                      n=     115 obs=     7 esp=    7.7 razón= 0.91 ±0.31 z= -0.3
+   −0,3…−0,1                                  n=    2222 obs=   208 esp=  193.6 razón= 1.07 ±0.06 z= +1.2
+   ≈0                                         n=   16401 obs=  1650 esp= 1654.2 razón= 1.00 ±0.02 z= -0.1
+   0,1…0,4                                    n=    2347 obs=   229 esp=  241.7 razón= 0.95 ±0.05 z= -1.0
+   0,8…1,5                                    n=     177 obs=    32 esp=   28.8 razón= 1.11 ±0.14 z= +0.8
+
+Etiquetas comunes con el último visto (no vistos)
+   0 etiquetas comunes con el último visto    n=   10805 obs=   923 esp=  942.3 razón= 0.98 ±0.03 z= -0.7
+   1                                          n=    7222 obs=   733 esp=  748.5 razón= 0.98 ±0.03 z= -0.7
+   2                                          n=     726 obs=   106 esp=  100.2 razón= 1.06 ±0.08 z= +0.7
+
+Etiquetas con la sesión
+   = 0                                        n=    1642 obs=   206 esp=  194.2 razón= 1.06 ±0.06 z= +1.0
+   -2.20…-1.02                                n=    1197 obs=    83 esp=   80.3 razón= 1.03 ±0.09 z= +0.4
+   -1.02…-0.58                                n=    1646 obs=   126 esp=  123.6 razón= 1.02 ±0.08 z= +0.3
+   -0.58…0.08                                 n=    4164 obs=   325 esp=  338.0 razón= 0.96 ±0.05 z= -0.8
+   0.08…0.89                                  n=    4600 obs=   474 esp=  469.8 razón= 1.01 ±0.04 z= +0.2
+   0.89…3.37                                  n=    8021 obs=   913 esp=  921.1 razón= 0.99 ±0.03 z= -0.3
+
+Relación con el último visto
+   sin vistas                                 n=    1430 obs=   143 esp=  143.0 razón= 1.00 ±0.07 z= +0.0
+   es un visto                                n=     758 obs=   184 esp=  181.5 razón= 1.01 ±0.05 z= +0.3
+   misma subcategoría que el último visto     n=    2017 obs=   232 esp=  219.4 razón= 1.06 ±0.06 z= +1.0
+   misma categoría                            n=    7049 obs=   760 esp=  764.1 razón= 0.99 ±0.03 z= -0.2
+   otra categoría                             n=   10016 obs=   808 esp=  819.0 razón= 0.99 ±0.03 z= -0.4
+
+Ventas históricas dentro de la subcategoría
+   top 10 %                                   n=   17442 obs=  1833 esp= 1860.9 razón= 0.98 ±0.02 z= -0.8
+   10–25 %                                    n=    2330 obs=   167 esp=  171.4 razón= 0.97 ±0.07 z= -0.4
+   25–50 %                                    n=     902 obs=    70 esp=   67.1 razón= 1.04 ±0.11 z= +0.4
+   50–75 %                                    n=     159 obs=     8 esp=    7.0 razón= 1.14 ±0.35 z= +0.4
+
+Rebaja activa
+   sin rebaja                                 n=   20356 obs=  2027 esp= 2033.7 razón= 1.00 ±0.02 z= -0.2
+   rebaja <15 %                               n=     208 obs=    24 esp=   23.2 razón= 1.03 ±0.18 z= +0.2
+   15–30 %                                    n=     706 obs=    76 esp=   70.1 razón= 1.08 ±0.10 z= +0.8

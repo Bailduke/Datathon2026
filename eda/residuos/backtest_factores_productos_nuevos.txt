@@ -1,0 +1,50 @@
+400 productos nuevos · norma de los factores: antiguos mediana 0.28 · imputados sub 0.26 · tag 0.28 · vecinos con etiqueta común: mediana 14
+  0/159166 peticiones · 1 s
+  40000/159166 peticiones · 83 s
+  80000/159166 peticiones · 173 s
+  120000/159166 peticiones · 273 s
+
+1591660 impresiones · 2127 compras · de productos nuevos: 40612 impresiones, 49 compras
+
+(1) Ajuste dentro de la lista (logit condicional; mismos parámetros en todas las variantes)
+   base  logver   -3424.3 · con indicador 'producto nuevo':   -3397.4, coeficiente +1.76 ± 0.22 (x5.81) · pesos de co-compra -0.08 1.75 0.78 1.52
+   sub   logver   -3410.6 · con indicador 'producto nuevo':   -3390.5, coeficiente +1.43 ± 0.21 (x4.17) · pesos de co-compra 0.19 1.82 0.93 1.47
+   tag   logver   -3398.9 · con indicador 'producto nuevo':   -3385.7, coeficiente +1.10 ± 0.20 (x3.02) · pesos de co-compra 0.39 1.90 1.05 1.46
+   subn  logver   -3412.2 · con indicador 'producto nuevo':   -3391.6, coeficiente +1.45 ± 0.21 (x4.28) · pesos de co-compra 0.16 1.81 0.91 1.49
+   tagn  logver   -3410.3 · con indicador 'producto nuevo':   -3390.3, coeficiente +1.42 ± 0.21 (x4.15) · pesos de co-compra 0.16 1.84 0.92 1.50
+
+(2) Conversión prevista de la lista que elegiría cada variante (últimas 60000 peticiones). 'Verdad' = modelo de la variante + indicador residual de producto nuevo
+   productos nuevos por lista de 10: base 0.21 · sub 0.29 · tag 0.39 · subn 0.27 · tagn 0.29
+   verdad = 'base' (indicador residual +1.64)
+      lista de 'base ' 2.461 %  (+0.00 % ± 0.00) · usuarios nuevos 3.567 % · con historia 1.989 %
+      lista de 'sub  ' 2.473 %  (+0.47 % ± 0.01) · usuarios nuevos 3.586 % · con historia 1.998 %
+      lista de 'tag  ' 2.484 %  (+0.93 % ± 0.02) · usuarios nuevos 3.613 % · con historia 2.002 %
+      lista de 'subn ' 2.471 %  (+0.39 % ± 0.01) · usuarios nuevos 3.583 % · con historia 1.997 %
+      lista de 'tagn ' 2.472 %  (+0.46 % ± 0.01) · usuarios nuevos 3.586 % · con historia 1.998 %
+   verdad = 'sub' (indicador residual +1.26)
+      lista de 'base ' 2.473 %  (+0.00 % ± 0.00) · usuarios nuevos 3.586 % · con historia 1.999 %
+      lista de 'sub  ' 2.494 %  (+0.83 % ± 0.02) · usuarios nuevos 3.612 % · con historia 2.017 %
+      lista de 'tag  ' 2.509 %  (+1.46 % ± 0.03) · usuarios nuevos 3.643 % · con historia 2.026 %
+      lista de 'subn ' 2.492 %  (+0.75 % ± 0.02) · usuarios nuevos 3.609 % · con historia 2.015 %
+      lista de 'tagn ' 2.493 %  (+0.80 % ± 0.02) · usuarios nuevos 3.611 % · con historia 2.016 %
+   verdad = 'tag' (indicador residual +0.90)
+      lista de 'base ' 2.475 %  (+0.00 % ± 0.00) · usuarios nuevos 3.585 % · con historia 2.002 %
+      lista de 'sub  ' 2.500 %  (+0.99 % ± 0.03) · usuarios nuevos 3.612 % · con historia 2.026 %
+      lista de 'tag  ' 2.520 %  (+1.81 % ± 0.05) · usuarios nuevos 3.645 % · con historia 2.040 %
+      lista de 'subn ' 2.497 %  (+0.89 % ± 0.03) · usuarios nuevos 3.609 % · con historia 2.023 %
+      lista de 'tagn ' 2.499 %  (+0.95 % ± 0.03) · usuarios nuevos 3.612 % · con historia 2.024 %
+   verdad = 'subn' (indicador residual +1.31)
+      lista de 'base ' 2.472 %  (+0.00 % ± 0.00) · usuarios nuevos 3.585 % · con historia 1.998 %
+      lista de 'sub  ' 2.493 %  (+0.84 % ± 0.02) · usuarios nuevos 3.612 % · con historia 2.016 %
+      lista de 'tag  ' 2.508 %  (+1.45 % ± 0.03) · usuarios nuevos 3.642 % · con historia 2.025 %
+      lista de 'subn ' 2.492 %  (+0.78 % ± 0.02) · usuarios nuevos 3.609 % · con historia 2.015 %
+      lista de 'tagn ' 2.493 %  (+0.83 % ± 0.02) · usuarios nuevos 3.612 % · con historia 2.016 %
+   verdad = 'tagn' (indicador residual +1.28)
+      lista de 'base ' 2.472 %  (+0.00 % ± 0.00) · usuarios nuevos 3.585 % · con historia 1.998 %
+      lista de 'sub  ' 2.493 %  (+0.84 % ± 0.02) · usuarios nuevos 3.611 % · con historia 2.016 %
+      lista de 'tag  ' 2.509 %  (+1.47 % ± 0.03) · usuarios nuevos 3.642 % · con historia 2.025 %
+      lista de 'subn ' 2.492 %  (+0.78 % ± 0.02) · usuarios nuevos 3.609 % · con historia 2.015 %
+      lista de 'tagn ' 2.493 %  (+0.85 % ± 0.02) · usuarios nuevos 3.612 % · con historia 2.017 %
+
+410 s
+exit 0

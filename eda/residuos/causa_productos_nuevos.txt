@@ -1,0 +1,23 @@
+40612 impresiones de productos nuevos, 49 compras
+pesos actuales de los gustos: {'cf_hist': -0.08, 'cf_sesion': 1.75, 'cf_carrito_hoy': 0.78, 'cf_vistas_hoy': 1.52, 'tag_hist': 0.55, 'tag_sesion': 0.31, 'tag_carrito_hoy': 0.24, 'tag_vistas_hoy': 0.24, 'tendencia': 1.01}
+
+(0) sin indicador / con indicador único
+   logver   -3424.3 · 
+   logver   -3397.4 · nuevo +1.76 ± 0.22
+
+co-compra (ya ponderada) de los productos de la lista: antiguos media 0.60 · nuevos media 0.000  → a los nuevos les 'falta' ≈ la media de sus compañeros de lista
+etiquetas (ya ponderadas): antiguos 0.25 · nuevos 0.03
+
+(1) H1: el indicador se sustituye por 'nuevo × co-compra media de los compañeros de lista' (pendiente 1 = le falta justo eso)
+   logver   -3396.1 · nuevo×cf_lista +1.44 ± 0.17
+   logver   -3393.8 · nuevo +0.89 ± 0.41 · nuevo×cf_lista +0.87 ± 0.32
+
+(2) El efecto 'nuevo' según cuánta co-compra hay en la lista (terciles de la media de los compañeros)
+   tercil 1: co-compra media de la lista 0.02 · 13538 impresiones · 3 compras
+   tercil 2: co-compra media de la lista 0.37 · 13537 impresiones · 6 compras
+   tercil 3: co-compra media de la lista 1.04 · 13537 impresiones · 40 compras
+   logver   -3396.1 · nuevo·t1 +0.78 ± 0.77 · nuevo·t2 +1.56 ± 0.52 · nuevo·t3 +1.92 ± 0.25
+
+(3) Listas sin ninguna co-compra (usuario sin cestas): ¿sigue habiendo efecto 'nuevo'?
+   impresiones de nuevos en listas sin co-compra: 128 · compras 0
+   logver   -3397.4 · nuevo·sin cf +0.00 ± 31.62 · nuevo·con cf +1.76 ± 0.22
