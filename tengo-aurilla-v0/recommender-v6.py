@@ -99,6 +99,7 @@ class Config:
     trend_hl: float = 5.0                # vida media (min) del EWMA rápido; 3-5 min predice mejor las compras orgánicas
     trend_hl_slow: float = 240.0         # vida media (min) del EWMA lento, que da la cuota habitual
     trend_a: float = 20.0                # suavizado, en eventos
+    trend_scale: float = 1.0             # multiplica el peso calibrado de la tendencia (para probar variantes en vivo)
     session_mix: bool = False            # True: la sesión como mezcla de peso fijo en P(c). Probado el sábado con
                                          # 877 mil impresiones: no mejora (logver -4194,5 frente a -4193,6) -> desactivado
     # --- valores por defecto si un parámetro no se puede estimar
@@ -1185,6 +1186,8 @@ class State:
         prm["taste"] = t if t.size == N_TASTE else np.zeros(N_TASTE)
         if not cfg.trend:
             prm["taste"] = np.r_[prm["taste"][:-1], 0.0]
+        elif cfg.trend_scale != 1.0:
+            prm["taste"] = np.r_[prm["taste"][:-1], prm["taste"][-1] * cfg.trend_scale]
         prm["taste_on"] = bool(cfg.taste and AFF is not None and np.any(prm["taste"] != 0))
         return prm
 
