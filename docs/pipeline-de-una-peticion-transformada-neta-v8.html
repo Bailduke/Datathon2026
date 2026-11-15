@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pipeline de una petición · transformada-neta-v8</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{--bg:#f3f0e8;--card:#fffdf8;--ink:#14202b;--mut:#66727e;--line:#9aa3ad;--rt:#0c8a69;--py:#2a5bd7;--md:#d4771f;
+--rt-s:#0c8a6922;--py-s:#2a5bd722;--md-s:#d4771f26;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d1319;--card:#16202a;--ink:#e9eef3;--mut:#93a0ac;--line:#5b6975;--rt:#2fd1a2;--py:#7aa2ff;--md:#ffa94d;--rt-s:#2fd1a225;--py-s:#7aa2ff25;--md-s:#ffa94d28;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0d1319;--card:#16202a;--ink:#e9eef3;--mut:#93a0ac;--line:#5b6975;--rt:#2fd1a2;--py:#7aa2ff;--md:#ffa94d;--rt-s:#2fd1a225;--py-s:#7aa2ff25;--md-s:#ffa94d28;color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 "Bricolage Grotesque",system-ui,sans-serif}
+.w{max-width:1160px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:clamp(34px,6vw,64px);line-height:1;margin:0 0 10px;font-weight:800;letter-spacing:-.03em}
+h1 b{color:var(--md)}
+h2{font-size:22px;margin:56px 0 16px;font-weight:700}
+.sub{color:var(--mut);margin:0 0 22px;font-size:17px}
+.mono,code{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.stats{display:flex;flex-wrap:wrap;gap:10px}
+.st{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 16px;min-width:120px}
+.st b{display:block;font-size:26px;font-weight:800;letter-spacing:-.02em}
+.st span{font-size:13px;color:var(--mut)}
+.lg{display:flex;gap:18px;font-size:14px;margin:0 0 10px;color:var(--mut)}
+.lg i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.sc{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:10px}
+svg{display:block;min-width:900px;width:100%;height:auto}
+svg text{font-family:"IBM Plex Mono",ui-monospace,monospace;fill:var(--ink)}
+.n rect{fill:var(--card);stroke-width:2}
+.n .t{font-size:12.5px;font-weight:500;text-anchor:middle}
+.n .s{font-size:10.5px;text-anchor:middle;fill:var(--mut)}
+.n .m{font-size:10.5px;text-anchor:middle;fill:var(--md);font-weight:500}
+.rt rect{stroke:var(--rt);fill:var(--rt-s)}.py rect{stroke:var(--py);fill:var(--py-s)}.md rect{stroke:var(--md);fill:var(--md-s)}
+.e{fill:none;stroke:var(--line);stroke-width:2}
+.d{stroke-dasharray:5 5}
+.lb{font-size:11px;fill:var(--mut)}
+.bit{fill:none;stroke:var(--md);stroke-width:3.5;stroke-linecap:round;stroke-dasharray:7 29;filter:drop-shadow(0 0 3px var(--md)) drop-shadow(0 0 6px var(--md));animation:flow 2.4s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-36}}
+@media(prefers-reduced-motion:reduce){.bit{display:none}}
+.cj{display:grid;grid-template-columns:1fr 34px 1fr 34px 1fr;align-items:center;gap:6px}
+.pn{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 12px 10px;text-align:center}
+.pn b{font-size:17px}.pn span{display:block;color:var(--mut);font-size:13px}
+.pn svg{min-width:0;width:100%}.pn big{display:block;font:500 24px 'IBM Plex Mono',monospace}
+.op{text-align:center;font-size:30px;color:var(--md);font-weight:700}.op svg{min-width:0;width:34px}
+.ct{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:16px 0;font-size:15px}
+.ct input{accent-color:var(--md);width:220px;vertical-align:middle}
+.ct button{font:inherit;background:var(--md);color:var(--bg);border:0;border-radius:9px;padding:7px 14px;font-weight:700;cursor:pointer}
+.cf{text-align:center;font:500 clamp(14px,2.4vw,20px) 'IBM Plex Mono',monospace;background:var(--card);border:2px solid var(--md);border-radius:14px;padding:12px}
+@media(max-width:860px){.cj{grid-template-columns:1fr}.op{transform:rotate(90deg)}}
+.fl{display:grid;grid-template-columns:repeat(5,1fr);gap:0;align-items:stretch}
+.fs{position:relative;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 14px;margin-right:22px}
+.fs:last-child{margin-right:0}
+.fs:not(:last-child)::after{content:"›";position:absolute;right:-20px;top:50%;transform:translateY(-50%);font-size:28px;color:var(--md);font-weight:700}
+.fs h3{margin:0 0 10px;font-size:17px}
+.fs h3 em{font-style:normal;display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--md);color:var(--bg);font-size:13px;margin-right:8px}
+.ch{display:flex;flex-wrap:wrap;gap:6px}
+.ch span{font:500 12px "IBM Plex Mono",monospace;padding:3px 8px;border-radius:7px;background:var(--py-s);border:1px solid var(--py)}
+.ch span.h{background:var(--rt-s);border-color:var(--rt)}.ch span.a{background:var(--md-s);border-color:var(--md)}
+.ch span.v8{background:var(--md);color:var(--bg);border-color:var(--md)}
+.fm{margin-top:14px;text-align:center;font:500 clamp(18px,3vw,28px) "IBM Plex Mono",monospace;background:var(--card);border:2px solid var(--md);border-radius:14px;padding:14px}
+.fm sup{font-size:.6em}
+.mp{display:grid;grid-template-columns:1.1fr 36px 1fr 36px 1.5fr;gap:8px 0;align-items:center}
+.mp>div{padding:9px 12px;border-radius:10px;font:500 13px "IBM Plex Mono",monospace;border:1.5px solid}
+.mp .r{border-color:var(--rt);background:var(--rt-s)}.mp .p{border-color:var(--py);background:var(--py-s)}.mp .o{border-color:var(--md);background:var(--md-s)}
+.mp .x{border:0;text-align:center;color:var(--line);font-size:20px;padding:0}
+.mp .hd{border:0;padding:0 0 2px;font:700 14px "Bricolage Grotesque",sans-serif;color:var(--mut)}
+.ft{margin-top:44px;color:var(--mut);font-size:13px}
+@media(max-width:860px){.fl{grid-template-columns:1fr;gap:22px}.fs{margin-right:0}.fs:not(:last-child)::after{content:"⌄";right:50%;top:auto;bottom:-30px;transform:translateX(50%)}
+.mp{grid-template-columns:1fr 20px 1fr;}.mp .x:nth-of-type(n){font-size:16px}.mp .o,.mp .hd:last-child{grid-column:1/4}}
+</style>
+</head>
+<body>
+<div class="w">
+  <h1>Una petición,<br>10 productos, <b>&lt; 3 s</b></h1>
+  <p class="sub">Así viaja cada comprador por RawTree y por transformada-neta-v8.</p>
+  <div class="stats">
+    <div class="st"><b>3 / s</b><span>peticiones</span></div>
+    <div class="st"><b>3,5 ms</b><span>calcular la lista</span></div>
+    <div class="st"><b>0,76 s</b><span>respuesta (p95 1,1 s)</span></div>
+    <div class="st"><b>99,9 %</b><span>válidas y a tiempo</span></div>
+    <div class="st"><b>2,36</b><span>conversión vs 0,6 baseline</span></div>
+  </div>
+
+  <h2>El camino completo</h2>
+  <div class="lg"><span><i style="background:var(--rt)"></i>RawTree</span><span><i style="background:var(--py)"></i>Python (hilos)</span><span><i style="background:var(--md)"></i>Modelo</span></div>
+  <div class="sc"><svg viewBox="0 0 1100 450" role="img" aria-label="Pipeline de una petición">
+    <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--line)"/></marker></defs>
+    <g id="edges">
+      <path class="e" d="M160 72H196" marker-end="url(#a)"/><path class="e" d="M346 72H382" marker-end="url(#a)"/>
+      <path class="e" d="M532 72H568" marker-end="url(#a)"/><path class="e" d="M718 72H754" marker-end="url(#a)"/>
+      <path class="e" d="M904 72H940" marker-end="url(#a)"/>
+      <path class="e" d="M457 205V118" marker-end="url(#a)"/>
+      <path class="e" d="M115 350V312H372V277" marker-end="url(#a)"/>
+      <path class="e" d="M335 350V320H430V277" marker-end="url(#a)"/>
+      <path class="e" d="M555 350V320H490V277" marker-end="url(#a)"/>
+      <path class="e" d="M775 350V312H550V277" marker-end="url(#a)"/>
+      <path class="e d" d="M1015 114V388H870" marker-end="url(#a)"/>
+      <path class="e" d="M85 128V138H1015V128" style="stroke:var(--md)"/>
+    </g>
+    <text class="lb" x="90" y="158" style="fill:var(--md)">&lt; 3 s desde el ts de la petición (límite interno 2,9 s)</text>
+    <text class="lb" x="1008" y="270" text-anchor="end">los organizadores</text>
+    <text class="lb" x="1008" y="284" text-anchor="end">puntúan la lista</text>
+    <text class="lb" x="466" y="168">lee</text>
+    <g id="nodes"></g>
+  </svg></div>
+
+  <h2>Cómo aprende el modelo de cada usuario</h2>
+  <div class='cj'>
+    <div class='pn'><b>Prior</b><span>la población</span><div id='p1'></div><big id='m1' style='color:var(--rt)'></big></div>
+    <div class='op'>+</div>
+    <div class='pn'><b>Datos</b><span>este usuario</span><div id='p2'></div><big id='m2' style='color:var(--py)'></big></div>
+    <div class='op'><svg viewBox='0 0 34 10' height='10'><path class='e' d='M0 5H28' marker-end='url(#a)'/><path class='bit' d='M0 5H28'/></svg></div>
+    <div class='pn'><b>Posterior</b><span>para este usuario</span><div id='p3'></div><big id='m3' style='color:var(--md)'></big></div>
+  </div>
+  <div class='ct'><label>compras del usuario <input type='range' id='nn' min='0' max='40' value='12'> <b id='nv'></b></label><button id='rp'>↻ conjugar</button></div>
+  <div class='cf' id='cf'></div>
+  <div class='ch' style='margin-top:12px'><span class='h'>poca historia → manda la población</span><span>mucha historia → manda el usuario</span><span class='a'>Dirichlet: categoría y subcategoría · Gamma: popularidad qᵢ</span></div>
+
+  <h2>Dentro de <code>answer()</code></h2>
+  <div class="fl">
+    <div class="fs"><h3><em>1</em>Usuario</h3><div class="ch"><span class="h">n_us</span><span class="h">r_u</span><span>vistas · ρ 0,65</span></div></div>
+    <div class="fs"><h3><em>2</em>Elegibles</h3><div class="ch"><span>en stock</span><span>no comprado</span></div></div>
+    <div class="fs"><h3><em>3</em>Jerarquía h</h3><div class="ch"><span class="h">categoría</span><span class="h">subcategoría</span><span class="h">producto</span></div></div>
+    <div class="fs"><h3><em>4</em>Afinidad A</h3><div class="ch"><span class="a">carrito</span><span class="a">vistas</span><span class="a">etiquetas</span><span class="a">co-compra</span><span class="a">tendencia τ</span><span class="v8">v8 · nuevo hereda</span></div></div>
+    <div class="fs"><h3><em>5</em>Top 10</h3><div class="ch"><span>Thompson</span><span>slot 1 = media</span></div></div>
+  </div>
+  <div class="fm">score(i) = h(i)<sup>θ</sup> · A(u,i)</div>
+
+  <h2>Qué saca el modelo de cada tabla de RawTree</h2>
+  <div class="mp">
+    <div class="hd">Tabla</div><div class="hd"></div><div class="hd">Hilo</div><div class="hd"></div><div class="hd">Alimenta</div>
+    <div class="r">shop.history_*</div><div class="x">→</div><div class="p">--build</div><div class="x">→</div><div class="o">ψ · κ · λ · β · popularidad inicial</div>
+    <div class="r">shop.requests</div><div class="x">→</div><div class="p">request_loop</div><div class="x">→</div><div class="o">usuario · contexto · recent_views</div>
+    <div class="r">shop.events</div><div class="x">→</div><div class="p">events_loop</div><div class="x">→</div><div class="o">n_us · carrito · Cᵢ,Tᵢ · tendencia τ</div>
+    <div class="r">shop.catalog_updates</div><div class="x">→</div><div class="p">catalog_loop</div><div class="x">→</div><div class="o">stock · precio · rebaja · nuevos + etiquetas</div>
+    <div class="r">team_03.feedback</div><div class="x">→</div><div class="p">feedback_loop<br>--calibrate</div><div class="x">→</div><div class="o">comprados (saciedad) · θ γ α η φ</div>
+    <div class="r">team_03.submissions<br>team_03.scratch</div><div class="x">←</div><div class="p">push_loop<br>health_loop</div><div class="x">←</div><div class="o">items[10] · métricas cada 60 s</div>
+  </div>
+  <p class="ft">Fuente: recommender-v8.py y modelo-neta-v8.pdf · team_03 · Datathon FME 2026</p>
+</div>
+<script>
+const N=[[10,30,150,84,'rt','shop.requests','recent_views · contexto'],
+[196,30,150,84,'py','request_loop','sondeo 50 ms · ×2'],
+[382,30,150,84,'md','answer()','≈ 3,5 ms'],
+[568,30,150,84,'py','validate()','10 únicos · stock'],
+[754,30,150,84,'py','push_loop','lotes ≤ 50 · ×4'],
+[940,30,150,84,'rt','team_03.submissions','items[10]'],
+[332,205,250,70,'md','Snapshot en memoria','usuarios · stock · qᵢ · τ · pesos'],
+[20,350,190,76,'rt','shop.history_*','--build · una vez','→ ψ κ λ β'],
+[240,350,190,76,'rt','shop.events','events_loop · 10 s','→ n_us · carrito · τ'],
+[460,350,190,76,'rt','shop.catalog_updates','catalog_loop · 0,75 s','→ stock · precio · nuevos'],
+[680,350,190,76,'rt','team_03.feedback','feedback_loop · 2 s','↻ --calibrate θ γ α η φ']];
+document.getElementById('nodes').innerHTML=N.map(([x,y,w,h,k,t,s,m])=>{
+ const c=x+w/2,two=!!m,ty=y+(two?26:h/2-2);
+ return `<g class="n ${k}"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="12"/><text class="t" x="${c}" y="${ty}">${t}</text><text class="s" x="${c}" y="${ty+19}">${s}</text>${two?`<text class="m" x="${c}" y="${y+64}">${m}</text>`:''}</g>`}).join('');
+const E=document.getElementById('edges');
+E.querySelectorAll('path[marker-end]').forEach((p,i)=>{const b=document.createElementNS('http://www.w3.org/2000/svg','path');
+ b.setAttribute('d',p.getAttribute('d'));b.setAttribute('class','bit');b.style.animationDelay=(-(i*0.8)%2.4)+'s';E.appendChild(b)});
+const K=10,P=.2,A0=K*P,B0=K*(1-P),XS=Array.from({length:101},(_,i)=>.005+i*.0099),$=id=>document.getElementById(id);
+const LG=x=>{let y=x,t=x+5.5,s=1.000000000190015;t-=(x+.5)*Math.log(t);for(const v of [76.18009172947146,-86.50532032941677,24.01409824083091,-1.231739572450155,.001208650973866179,-5.395239384953e-6])s+=v/++y;return -t+Math.log(2.5066282746310005*s/x)};
+const ys=(a,b)=>XS.map(x=>Math.exp((a-1)*Math.log(x)+(b-1)*Math.log(1-x)+LG(a+b)-LG(a)-LG(b)));
+const C={rt:'var(--rt)',py:'var(--py)',md:'var(--md)'};
+function draw(id,L,ym,V){const f=(y,i)=>(10+XS[i]*280).toFixed(1)+','+(120-100*Math.min(y/ym,1.1)).toFixed(1);
+ let s="<svg viewBox='0 0 300 135'><line x1='10' x2='290' y1='120' y2='120' stroke='var(--line)'/>";
+ for(const [y,c,d] of L){const p=y.map(f).join('L');s+=`<path d='M10,120L${p}L290,120Z' fill='${c}' fill-opacity='${d?0:.25}'/><path d='M${p}' fill='none' stroke='${c}' stroke-width='${d?1.5:3}' ${d?"stroke-dasharray='4 4'":''}/>`}
+ for(const [m,c] of V)if(m!=null)s+=`<line x1='${10+m*280}' x2='${10+m*280}' y1='14' y2='120' stroke='${c}' stroke-dasharray='3 3'/>`;
+ $(id).innerHTML=s+'</svg>'}
+let tok=0;
+function render(t){const n=+$('nn').value,k=Math.round(.7*n),a=A0+t*k,b=B0+t*(n-k),y0=ys(A0,B0),yp=ys(a,b),yd=ys(k+1,n-k+1),mp=a/(a+b),md=n?k/n:null;
+ $('nv').textContent=n;
+ draw('p1',[[y0,C.rt]],Math.max(...y0),[[P,C.rt]]);
+ draw('p2',[[yd,C.py]],Math.max(...yd),[[md,C.py]]);
+ draw('p3',[[y0,C.rt,1],[yp,C.md]],Math.max(...y0,...yp),[[P,C.rt],[md,C.py],[mp,C.md]]);
+ $('m1').textContent='20 %';$('m2').textContent=n?Math.round(100*md)+' %':'—';$('m3').textContent=Math.round(100*mp)+' %';
+ $('cf').innerHTML=`<span style='color:var(--rt)'>Beta(${A0}, ${B0})</span> + <span style='color:var(--py)'>${k} de ${n}</span> → <span style='color:var(--md)'>Beta(${A0+k}, ${B0+n-k})</span>`}
+function play(){const my=++tok,s=performance.now();if(matchMedia('(prefers-reduced-motion:reduce)').matches)return render(1);
+ (function f(now){if(my!==tok)return;const t=Math.max(0,Math.min(1,(now-s)/1800));render(t*t*(3-2*t));if(t<1)requestAnimationFrame(f)})(s)}
+$('nn').oninput=play;$('rp').onclick=play;render(1);
+new IntersectionObserver((e,o)=>{if(e[0].isIntersecting){play();o.disconnect()}}).observe($('p3'));
+</script>
+</body>
+</html>

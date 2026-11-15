@@ -19,7 +19,7 @@
 \title{\textbf{transformada-neta-v8}\\[0.3em]
 \large Modelo jerárquico factorizado con afinidad usuario--producto\\ y tendencias, para recomendación en tiempo real}
 \author{Equipo \cod{team\_03} $\cdot$ Reto RawTree $\cdot$ Datathon FME 2026}
-\date{Pesos estimados el 15 de noviembre de 2026, 03:47 CET (los de la versión 7)}
+\date{Pesos estimados el 15 de noviembre de 2026, 09:11 CET (los de la final)}
 
 \begin{document}
 \maketitle
@@ -364,8 +364,8 @@ en 2 de ellos y «extra durability» en otros 2. Un candidato con justo esas dos
 $\nu_1=\nu_2=2$ y
 $T=2\log\frac{20\cdot2+6}{6+6}=2\log 3{,}83=2{,}69$. Un candidato cuyas dos etiquetas no aparecen en
 la sesión tiene $\nu_1=\nu_2=0$ y $T=2\log\frac{0+6}{6+6}=2\log 0{,}5=-1{,}39$. Con el peso de
-la sesión ($\alpha_b=0{,}295$) el primero multiplica su probabilidad por $e^{0{,}295\cdot2{,}69}=2{,}21$ y el
-segundo por $0{,}66$.
+la sesión ($\alpha_b=0{,}26$) el primero multiplica su probabilidad por $e^{0{,}26\cdot2{,}69}=2{,}01$ y el
+segundo por $0{,}70$.
 
 \paragraph{Co-compra: $G_b(u,i)$.} Con las $N=55\,956$ cestas históricas se cuenta en cuántas aparecen
 juntos los productos $i$ y $j$ ($M_{ij}$) y en cuántas aparece cada uno ($M_i$). El log-\emph{lift}
@@ -562,7 +562,7 @@ y_{tj}\sim\Poi\Big(w_k\;e^{\,\xi_0+\xi_1\,\text{nuevo}_t+\xi_2\,\text{home}_t}\;
 Como $y_{tj}$ es 0 o 1, lo exacto sería una Bernoulli; con probabilidades del orden de una por mil las dos
 coinciden (comparada con una regresión logística, los pesos difieren menos que su error).
 
-Con $1\,780\,630$ impresiones y $2\,534$ compras:
+Con $2\,362\,870$ impresiones y $3\,814$ compras (calibración de las 09:11 del domingo, la que corrió en la final):
 
 \begin{center}
 \small
@@ -570,32 +570,32 @@ Con $1\,780\,630$ impresiones y $2\,534$ compras:
 \toprule
 Parámetro & Dentro de la lista (se usa) & Poisson\\
 \midrule
-$\theta$ (exponente de $h$) & $0{,}54\pm0{,}04$ & $0{,}53$\\
-$\gamma_{\text{hoy}}$ carrito de hoy & $0{,}83\pm0{,}07$ & $0{,}96$\\
-$\gamma_{\text{hist}}$ carrito histórico & $0{,}66\pm0{,}07$ & $0{,}75$\\
-$\gamma_{\text{única}}$ vista única & $2{,}32\pm0{,}20$ & $2{,}33$\\
-$\gamma_{\text{prim}}$ primer visto de varios & $1{,}38\pm0{,}18$ & $1{,}12$\\
-$\gamma_{\text{otros}}$ otros vistos & $1{,}18\pm0{,}17$ & $0{,}81$\\
-$\eta$ co-compra, historia & $0{,}01\pm0{,}24$ & $0{,}99$\\
-$\eta$ co-compra, sesión & $1{,}74\pm0{,}18$ & $1{,}37$\\
-$\eta$ co-compra, carrito de hoy & $0{,}70\pm0{,}26$ & $-0{,}11$\\
-$\eta$ co-compra, vistas de hoy & $1{,}54\pm0{,}41$ & $3{,}03$\\
-$\alpha$ etiquetas, historia & $0{,}56\pm0{,}05$ & $0{,}36$\\
-$\alpha$ etiquetas, sesión & $0{,}30\pm0{,}03$ & $0{,}30$\\
-$\alpha$ etiquetas, carrito de hoy & $0{,}23\pm0{,}04$ & $0{,}30$\\
-$\alpha$ etiquetas, vistas de hoy & $0{,}24\pm0{,}05$ & $0{,}19$\\
-$\varphi$ tendencia & $0{,}95\pm0{,}18$ & $1{,}04$\\
+$\theta$ (exponente de $h$) & $0{,}54\pm0{,}03$ & $0{,}53$\\
+$\gamma_{\text{hoy}}$ carrito de hoy & $0{,}79\pm0{,}06$ & $0{,}93$\\
+$\gamma_{\text{hist}}$ carrito histórico & $0{,}63\pm0{,}06$ & $0{,}74$\\
+$\gamma_{\text{única}}$ vista única & $2{,}36\pm0{,}17$ & $2{,}30$\\
+$\gamma_{\text{prim}}$ primer visto de varios & $1{,}44\pm0{,}14$ & $1{,}17$\\
+$\gamma_{\text{otros}}$ otros vistos & $1{,}15\pm0{,}14$ & $0{,}75$\\
+$\eta$ co-compra, historia & $0{,}09\pm0{,}22$ & $0{,}81$\\
+$\eta$ co-compra, sesión & $1{,}86\pm0{,}16$ & $1{,}39$\\
+$\eta$ co-compra, carrito de hoy & $1{,}12\pm0{,}23$ & $-0{,}23$\\
+$\eta$ co-compra, vistas de hoy & $1{,}15\pm0{,}37$ & $3{,}41$\\
+$\alpha$ etiquetas, historia & $0{,}57\pm0{,}04$ & $0{,}39$\\
+$\alpha$ etiquetas, sesión & $0{,}26\pm0{,}03$ & $0{,}27$\\
+$\alpha$ etiquetas, carrito de hoy & $0{,}22\pm0{,}03$ & $0{,}31$\\
+$\alpha$ etiquetas, vistas de hoy & $0{,}28\pm0{,}04$ & $0{,}22$\\
+$\varphi$ tendencia & $1{,}08\pm0{,}16$ & $1{,}08$\\
 \bottomrule
 \end{tabular}
 \end{center}
 
 Los dos métodos coinciden en casi todo. Difieren en la co-compra: con todas las impresiones juntas, la de
-la historia y la de las vistas de hoy parecían valer mucho; dentro de la lista, la primera vale cero y la
-segunda la mitad. Fuera de muestra (ajuste con el primer 70\,\% del tiempo), los pesos estimados dentro
-de la lista ordenan mejor: $+8{,}3$ de log-verosimilitud sobre $1\,045$ compras.
+la historia y la de las vistas de hoy parecían valer mucho; dentro de la lista, la primera vale casi cero y la
+segunda un tercio. Fuera de muestra (ajuste con el primer 70\,\% del tiempo), los pesos estimados dentro
+de la lista ordenan mejor: $+8{,}3$ de log-verosimilitud sobre $1\,045$ compras (medido con la calibración de las 03:47).
 
-Log-verosimilitud de Poisson: solo la jerárquica $-17\,218{,}5$; con las clases $-16\,642{,}2$; con los
-gustos latentes y la tendencia $-14\,914{,}9$.
+Log-verosimilitud de Poisson: solo la jerárquica $-25\,601{,}2$; con las clases $-24\,804{,}0$; con los
+gustos latentes y la tendencia $-22\,248{,}3$.
 
 \paragraph{Vida media de la tendencia.} Se eligió con las compras orgánicas del \emph{stream}
 ($150\,000$), prediciendo la cuota de compras de cada subcategoría en los 5 minutos siguientes; se
@@ -901,9 +901,11 @@ sus compras respecto a un producto antiguo medio de su subcategoría son planas 
 tercera): no hay pico de lanzamiento ni rampa. Si se juntan las tandas parece que la demanda sube con la
 edad, pero es un efecto de composición.
 
-\paragraph{Prueba A/B de esta versión.} Desde las 05:36 del domingo se compara, a mitades, con la
-versión 7. El efecto esperado es menor que el ruido de una prueba de tres horas ($\pm3{,}5$\,\% relativo):
-sirve para comprobar que no rompe nada, no para medir la mejora. Con la herencia apagada
+\paragraph{Prueba A/B de esta versión.} De 05:40 a 08:15 del domingo se comparó, a mitades, con la
+versión 7 ($13\,876$ y $14\,024$ listas). Leaderboard: $2{,}26$ frente a $2{,}16$ (usuarios «cold» $2{,}78$
+frente a $2{,}66$). Compras reales: $2{,}13$\,\% frente a $2{,}33$\,\% ($\pm0{,}18$). Ningún error de envío en
+ninguna de las dos. Las dos medidas se contradicen y ambas están dentro del ruido de una prueba de tres
+horas ($\pm3{,}5$\,\% relativo): la prueba sirvió para comprobar que no rompe nada, no para medir la mejora. Con la herencia apagada
 (\cod{--set impute\_new=false}), la versión 8 reproduce exactamente la 7 (misma log-verosimilitud,
 $-3\,424{,}3$).
 
@@ -928,8 +930,9 @@ reescalar la norma, que debería cambiar poco, la reduce a la mitad.
 siguen comprándose 3 veces lo previsto: la media de los vecinos recupera solo una parte de su co-compra
 real. Estimarla con las cestas del propio \emph{stream} queda pendiente. No se ha añadido un multiplicador
 para tapar ese resto: sería un parámetro estimado con 49 compras.
-\item Los pesos son los de la versión 7, estimados sin factores heredados. Al recalibrar, los de
-co-compra suben algo ($1{,}75\to1{,}90$ en la sesión).
+\item Los pesos de la final se reestimaron a las 09:11, ya con los factores heredados y con $3\,814$ compras
+en lugar de $2\,534$. Cambian poco respecto a los de la versión 7: todos dentro de su error salvo dos de
+co-compra que se compensan (carrito de hoy $0{,}70\to1{,}12$, vistas de hoy $1{,}54\to1{,}15$).
 \item Las clases de sesión de la versión 7 tampoco están demostradas: $+0{,}31\pm0{,}21$ puntos de compras
 reales en su prueba A/B.
 \item \textbf{Compradores que acaban de llegar.} La afinidad se alimenta de lo que el usuario hace durante

@@ -1,0 +1,28 @@
+159166 listas · 2127 con compra · 6824 con clic
+
+(A) ¿Aparece en shop.events? (ventana de 2 min después; entre paréntesis, la misma ventana ANTES, como referencia)
+   producto COMPRADO en el carrusel         → evento 'view       ' del mismo usuario y producto:   0.1 %  ( 0.0 % antes) · n=2122
+   producto COMPRADO en el carrusel         → evento 'add_to_cart' del mismo usuario y producto:   0.1 %  ( 0.0 % antes) · n=2122
+   producto COMPRADO en el carrusel         → evento 'purchase   ' del mismo usuario y producto:   0.1 %  ( 0.0 % antes) · n=2122
+   producto CLICADO en el carrusel          → evento 'view       ' del mismo usuario y producto:   0.1 %  ( 0.1 % antes) · n=6798
+   producto CLICADO en el carrusel          → evento 'add_to_cart' del mismo usuario y producto:   0.1 %  ( 0.1 % antes) · n=6798
+   producto CLICADO en el carrusel          → evento 'purchase   ' del mismo usuario y producto:   0.1 %  ( 0.0 % antes) · n=6798
+   mostrado en la misma lista, no clicado   → evento 'view       ' del mismo usuario y producto:   0.1 %  ( 0.0 % antes) · n=6798
+   mostrado en la misma lista, no clicado   → evento 'add_to_cart' del mismo usuario y producto:   0.1 %  ( 0.0 % antes) · n=6798
+   mostrado en la misma lista, no clicado   → evento 'purchase   ' del mismo usuario y producto:   0.1 %  ( 0.0 % antes) · n=6798
+
+(B) Siguiente petición del mismo usuario (en menos de 10 min): ¿el producto está en sus vistas recientes?
+   mostrado en posición 1, sin clic     0.54 %  (n=6686)
+   mostrado en 2–10, sin clic           0.38 %  (n=61699)
+   clicado                              3.45 %  (n=232)
+   tiempo hasta la siguiente petición (mediana): sin clic 6663 s · con clic 6173 s
+
+(C) Compras por cada 100 listas según el número de orden de la petición del usuario en el día (páginas con sesión, sin home)
+   petición nº 1       1.44 % ± 0.06  (n=46045)
+   petición nº 2       1.65 % ± 0.07  (n=29932)
+   petición nº 3–5     1.80 % ± 0.07  (n=35980)
+   petición nº 6–10    1.29 % ± 0.11  (n=10738)
+   petición nº 11–20   0.91 % ± 0.16  (n=3748)
+   petición nº 21+     0.50 % ± 0.22  (n=1008)
+   desde la 3.ª petición, aún no ha comprado en el carrusel   1.35 % ± 0.05  (n=50299)
+   desde la 3.ª petición, ya compró en el carrusel hoy       12.34 % ± 1.02  (n=1175)
