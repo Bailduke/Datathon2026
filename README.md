@@ -23,7 +23,8 @@ mejoraban (ver [Lo que se probó y se descartó](#lo-que-se-probó-y-se-descart�
 | Pesos | Calibrados a las 09:11 con todo el feedback acumulado (3.814 compras en 236.000 listas); copia en [tengo-aurilla-v0/params_final_v8.json](tengo-aurilla-v0/params_final_v8.json) |
 | Tiempo de cálculo por petición | p50 1,0 ms · p99 2,2 ms |
 | Antigüedad de la petición al enviar la respuesta | p50 0,75 s · p95 1,1 s (límite: 3 s) |
-| **Resultado** | **3.º de 42 equipos**, puntuación 56,21 (1.º 58,28 · 2.º 57,73) |
+| **Resultado** | **2.º puesto** en el reto principal (clasificación final, con la valoración del jurado) · **1.º en el reto Tukey** con el [cuadro de mando](quadre-comandament/) |
+| Leaderboard automático | puntuación 56,21, la tercera más alta (las dos primeras: 58,28 y 57,73) |
 | Conversión | 2,189 % (baseline 0,750 % · referencia de la organización 2,141 %) |
 | Conversión con usuarios «cold» | 2,553 % |
 | Respuestas a tiempo | 99,93 % (16 de 21.600 perdidas, 15 de ellas por una caída de 5 s de la API a las 11:56) |
