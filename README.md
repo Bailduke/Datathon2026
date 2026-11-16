@@ -1,5 +1,7 @@
 # Recomendador en tiempo real · team_03 · Datathon FME 2026
 
+Proyecto presentado a la **Datathon FME 2026** (UPC).
+
 Solución del equipo **team_03** al reto de RawTree: responder en menos de 3 segundos, con una lista de
 10 productos, a cada petición de un carrusel de recomendaciones, sobre un stream en vivo de una tienda
 simulada (usuarios, productos y tendencias nuevos mientras corre).
